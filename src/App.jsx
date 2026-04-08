@@ -1,6 +1,6 @@
 import { useState, useCallback } from 'react';
 import { StoreProvider, useStore } from './hooks/useStore';
-import Layout from './components/Layout';
+import Layout, { ToastProvider } from './components/Layout';
 import CommandCentre from './modules/CommandCentre';
 import ClientHub from './modules/ClientHub';
 import CampaignCommand from './modules/CampaignCommand';
@@ -140,7 +140,9 @@ export default function App() {
   return (
     <PasswordGate>
       <StoreProvider>
-        <AppContent />
+        <ToastProvider>
+          <AppContent />
+        </ToastProvider>
       </StoreProvider>
     </PasswordGate>
   );

@@ -1,28 +1,49 @@
-import { useState, useMemo, useEffect } from 'react';
+import { useState, useMemo, useEffect, useCallback } from 'react';
 import { useStore } from '../hooks/useStore';
 import {
   Users, Plus, Search, ChevronRight, ArrowLeft, Edit3, Trash2,
   Globe, Mail, Phone, ExternalLink, Megaphone, Calendar,
   BookOpen, Brain, MessageSquare, Send, X, Check, Filter,
-  Building2, Tag, AlertCircle, Loader2,
+  Building2, Tag, AlertCircle, Loader2, ChevronLeft, UserPlus,
+  Activity, Lightbulb, Clock, TrendingUp, Star,
 } from 'lucide-react';
 import {
   getInitials, getClientColor, formatDate, relativeTime,
   SECTORS, PLATFORMS, BUDGET_RANGES, PARTNERSHIP_TYPES, CLIENT_STATUSES, PRIORITIES,
 } from '../lib/utils';
 import { callAI } from '../lib/ai';
+import {
+  format, startOfMonth, endOfMonth, eachDayOfInterval, isSameDay,
+  isSameMonth, addMonths, subMonths, startOfWeek, endOfWeek, isToday, parseISO,
+  differenceInDays,
+} from 'date-fns';
+
+const EMPTY_CONTACT = { name: '', role: '', email: '', phone: '' };
 
 const EMPTY_CLIENT = {
   name: '', sector: '', platforms: [], partnershipType: '',
   status: 'Active', budgetRange: '', priority: 'Medium',
   contactName: '', contactEmail: '', contactPhone: '',
+  contacts: [{ ...EMPTY_CONTACT }],
   website: '', socialHandles: { instagram: '', tiktok: '', youtube: '', linkedin: '', twitter: '' },
   brandVoice: '', targetAudience: '', keyMessages: [''],
-  goals: '', notes: '',
+  goals: '', notes: '', description: '', currentMarketing: '', dateOnboarded: '',
 };
 
+/* ─── Client Form ─── */
 function ClientForm({ initial, onSave, onCancel }) {
-  const [form, setForm] = useState(initial || EMPTY_CLIENT);
+  const [form, setForm] = useState(() => {
+    const base = initial || EMPTY_CLIENT;
+    return {
+      ...EMPTY_CLIENT,
+      ...base,
+      contacts: base.contacts?.length ? base.contacts : (base.contactName ? [{ name: base.contactName, role: '', email: base.contactEmail || '', phone: base.contactPhone || '' }] : [{ ...EMPTY_CONTACT }]),
+      keyMessages: base.keyMessages?.length ? base.keyMessages : [''],
+      description: base.description || '',
+      currentMarketing: base.currentMarketing || '',
+      dateOnboarded: base.dateOnboarded || '',
+    };
+  });
   const [errors, setErrors] = useState({});
 
   const set = (key, val) => setForm(prev => ({ ...prev, [key]: val }));
@@ -39,14 +60,33 @@ function ClientForm({ initial, onSave, onCancel }) {
     }));
   };
 
+  /* Contact management */
+  const addContact = () => setForm(prev => ({ ...prev, contacts: [...prev.contacts, { ...EMPTY_CONTACT }] }));
+  const updateContact = (idx, field, val) => {
+    setForm(prev => {
+      const contacts = [...prev.contacts];
+      contacts[idx] = { ...contacts[idx], [field]: val };
+      return { ...prev, contacts };
+    });
+  };
+  const removeContact = (idx) => {
+    setForm(prev => {
+      const contacts = prev.contacts.filter((_, i) => i !== idx);
+      return { ...prev, contacts: contacts.length ? contacts : [{ ...EMPTY_CONTACT }] };
+    });
+  };
+
   const validate = () => {
     const e = {};
     if (!form.name.trim()) e.name = 'Required';
     if (!form.sector) e.sector = 'Required';
     if (form.platforms.length === 0) e.platforms = 'Select at least one';
     if (!form.partnershipType) e.partnershipType = 'Required';
-    if (!form.contactName.trim()) e.contactName = 'Required';
-    if (form.contactEmail && !/\S+@\S+\.\S+/.test(form.contactEmail)) e.contactEmail = 'Invalid email';
+    const primaryContact = form.contacts[0];
+    if (!primaryContact?.name?.trim()) e.contactPrimary = 'Primary contact name required';
+    form.contacts.forEach((c, i) => {
+      if (c.email && !/\S+@\S+\.\S+/.test(c.email)) e[`contactEmail_${i}`] = 'Invalid email';
+    });
     setErrors(e);
     return Object.keys(e).length === 0;
   };
@@ -54,8 +94,13 @@ function ClientForm({ initial, onSave, onCancel }) {
   const handleSubmit = (e) => {
     e.preventDefault();
     if (!validate()) return;
+    const contactsClean = form.contacts.filter(c => c.name.trim());
     onSave({
       ...form,
+      contacts: contactsClean.length ? contactsClean : [{ ...EMPTY_CONTACT }],
+      contactName: contactsClean[0]?.name || '',
+      contactEmail: contactsClean[0]?.email || '',
+      contactPhone: contactsClean[0]?.phone || '',
       keyMessages: form.keyMessages.filter(m => m.trim()),
     });
   };
@@ -73,18 +118,18 @@ function ClientForm({ initial, onSave, onCancel }) {
 
   const fieldClass = (key) =>
     `w-full bg-[#12121A] border ${errors[key] ? 'border-red-500' : 'border-[#2A2A3A]'} rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors`;
+  const textareaClass = 'w-full bg-[#12121A] border border-[#2A2A3A] rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors resize-none';
 
   return (
     <form onSubmit={handleSubmit} className="space-y-6">
+      {/* Business Information */}
+      <h3 className="text-sm font-semibold text-white/90 flex items-center gap-2"><Building2 size={14} className="text-emerald-400" /> Business Information</h3>
       <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        {/* Company name */}
         <div>
           <label className="block text-xs text-[#9CA3AF] mb-1.5">Company / Brand Name *</label>
           <input className={fieldClass('name')} value={form.name} onChange={e => set('name', e.target.value)} placeholder="e.g. Ted's Health" />
           {errors.name && <p className="text-xs text-red-400 mt-1">{errors.name}</p>}
         </div>
-
-        {/* Sector */}
         <div>
           <label className="block text-xs text-[#9CA3AF] mb-1.5">Sector *</label>
           <select className={fieldClass('sector')} value={form.sector} onChange={e => set('sector', e.target.value)}>
@@ -93,8 +138,10 @@ function ClientForm({ initial, onSave, onCancel }) {
           </select>
           {errors.sector && <p className="text-xs text-red-400 mt-1">{errors.sector}</p>}
         </div>
-
-        {/* Partnership Type */}
+        <div className="md:col-span-2">
+          <label className="block text-xs text-[#9CA3AF] mb-1.5">Business Description</label>
+          <textarea className={textareaClass} rows={3} value={form.description} onChange={e => set('description', e.target.value)} placeholder="Brief description of what the business does..." />
+        </div>
         <div>
           <label className="block text-xs text-[#9CA3AF] mb-1.5">Partnership Type *</label>
           <select className={fieldClass('partnershipType')} value={form.partnershipType} onChange={e => set('partnershipType', e.target.value)}>
@@ -103,16 +150,12 @@ function ClientForm({ initial, onSave, onCancel }) {
           </select>
           {errors.partnershipType && <p className="text-xs text-red-400 mt-1">{errors.partnershipType}</p>}
         </div>
-
-        {/* Status */}
         <div>
           <label className="block text-xs text-[#9CA3AF] mb-1.5">Status</label>
           <select className={fieldClass('status')} value={form.status} onChange={e => set('status', e.target.value)}>
             {CLIENT_STATUSES.map(s => <option key={s} value={s}>{s}</option>)}
           </select>
         </div>
-
-        {/* Budget */}
         <div>
           <label className="block text-xs text-[#9CA3AF] mb-1.5">Budget Range</label>
           <select className={fieldClass('budgetRange')} value={form.budgetRange} onChange={e => set('budgetRange', e.target.value)}>
@@ -120,13 +163,19 @@ function ClientForm({ initial, onSave, onCancel }) {
             {BUDGET_RANGES.map(b => <option key={b} value={b}>{b}</option>)}
           </select>
         </div>
-
-        {/* Priority */}
         <div>
           <label className="block text-xs text-[#9CA3AF] mb-1.5">Priority</label>
           <select className={fieldClass('priority')} value={form.priority} onChange={e => set('priority', e.target.value)}>
             {PRIORITIES.map(p => <option key={p} value={p}>{p}</option>)}
           </select>
+        </div>
+        <div>
+          <label className="block text-xs text-[#9CA3AF] mb-1.5">Date Onboarded</label>
+          <input className={fieldClass('dateOnboarded')} type="date" value={form.dateOnboarded} onChange={e => set('dateOnboarded', e.target.value)} />
+        </div>
+        <div>
+          <label className="block text-xs text-[#9CA3AF] mb-1.5">Website</label>
+          <input className={fieldClass('website')} value={form.website} onChange={e => set('website', e.target.value)} placeholder="https://..." />
         </div>
       </div>
 
@@ -153,34 +202,63 @@ function ClientForm({ initial, onSave, onCancel }) {
 
       <hr className="border-[#2A2A3A]" />
 
-      {/* Contact info */}
-      <h3 className="text-sm font-semibold text-white/90">Contact Information</h3>
-      <div className="grid grid-cols-1 md:grid-cols-3 gap-5">
-        <div>
-          <label className="block text-xs text-[#9CA3AF] mb-1.5">Contact Name *</label>
-          <input className={fieldClass('contactName')} value={form.contactName} onChange={e => set('contactName', e.target.value)} placeholder="Full name" />
-          {errors.contactName && <p className="text-xs text-red-400 mt-1">{errors.contactName}</p>}
-        </div>
-        <div>
-          <label className="block text-xs text-[#9CA3AF] mb-1.5">Email</label>
-          <input className={fieldClass('contactEmail')} type="email" value={form.contactEmail} onChange={e => set('contactEmail', e.target.value)} placeholder="email@company.com" />
-          {errors.contactEmail && <p className="text-xs text-red-400 mt-1">{errors.contactEmail}</p>}
-        </div>
-        <div>
-          <label className="block text-xs text-[#9CA3AF] mb-1.5">Phone</label>
-          <input className={fieldClass('contactPhone')} value={form.contactPhone} onChange={e => set('contactPhone', e.target.value)} placeholder="+44..." />
-        </div>
+      {/* Marketing */}
+      <h3 className="text-sm font-semibold text-white/90 flex items-center gap-2"><TrendingUp size={14} className="text-emerald-400" /> Current Marketing</h3>
+      <div>
+        <label className="block text-xs text-[#9CA3AF] mb-1.5">Current Marketing Practices</label>
+        <textarea className={textareaClass} rows={3} value={form.currentMarketing} onChange={e => set('currentMarketing', e.target.value)} placeholder="Describe current marketing activities, channels, ad spend, existing content strategy..." />
       </div>
 
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-5">
-        <div>
-          <label className="block text-xs text-[#9CA3AF] mb-1.5">Website</label>
-          <input className={fieldClass('website')} value={form.website} onChange={e => set('website', e.target.value)} placeholder="https://..." />
-        </div>
+      <hr className="border-[#2A2A3A]" />
+
+      {/* Key Contacts */}
+      <div className="flex items-center justify-between">
+        <h3 className="text-sm font-semibold text-white/90 flex items-center gap-2"><UserPlus size={14} className="text-emerald-400" /> Key Contacts</h3>
+        <button type="button" onClick={addContact} className="text-xs text-emerald-400 hover:text-emerald-300 transition-colors flex items-center gap-1">
+          <Plus size={12} /> Add Contact
+        </button>
       </div>
+      {errors.contactPrimary && <p className="text-xs text-red-400">{errors.contactPrimary}</p>}
+      <div className="space-y-4">
+        {form.contacts.map((contact, idx) => (
+          <div key={idx} className="bg-[#12121A] border border-[#2A2A3A] rounded-md p-4 relative">
+            <div className="flex items-center justify-between mb-3">
+              <span className="text-[10px] uppercase tracking-wider text-[#6B7280] font-semibold">
+                {idx === 0 ? 'Primary Contact *' : `Contact ${idx + 1}`}
+              </span>
+              {form.contacts.length > 1 && (
+                <button type="button" onClick={() => removeContact(idx)} className="text-[#6B7280] hover:text-red-400 transition-colors">
+                  <Trash2 size={13} />
+                </button>
+              )}
+            </div>
+            <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-3">
+              <div>
+                <label className="block text-[10px] text-[#6B7280] mb-1">Name {idx === 0 ? '*' : ''}</label>
+                <input className="w-full bg-[#0A0A0F] border border-[#2A2A3A] rounded-md px-2.5 py-1.5 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors" value={contact.name} onChange={e => updateContact(idx, 'name', e.target.value)} placeholder="Full name" />
+              </div>
+              <div>
+                <label className="block text-[10px] text-[#6B7280] mb-1">Role</label>
+                <input className="w-full bg-[#0A0A0F] border border-[#2A2A3A] rounded-md px-2.5 py-1.5 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors" value={contact.role} onChange={e => updateContact(idx, 'role', e.target.value)} placeholder="e.g. Marketing Director" />
+              </div>
+              <div>
+                <label className="block text-[10px] text-[#6B7280] mb-1">Email</label>
+                <input className="w-full bg-[#0A0A0F] border border-[#2A2A3A] rounded-md px-2.5 py-1.5 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors" type="email" value={contact.email} onChange={e => updateContact(idx, 'email', e.target.value)} placeholder="email@co.com" />
+                {errors[`contactEmail_${idx}`] && <p className="text-[10px] text-red-400 mt-0.5">{errors[`contactEmail_${idx}`]}</p>}
+              </div>
+              <div>
+                <label className="block text-[10px] text-[#6B7280] mb-1">Phone</label>
+                <input className="w-full bg-[#0A0A0F] border border-[#2A2A3A] rounded-md px-2.5 py-1.5 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors" value={contact.phone} onChange={e => updateContact(idx, 'phone', e.target.value)} placeholder="+44..." />
+              </div>
+            </div>
+          </div>
+        ))}
+      </div>
+
+      <hr className="border-[#2A2A3A]" />
 
       {/* Social Handles */}
-      <h3 className="text-sm font-semibold text-white/90">Social Handles</h3>
+      <h3 className="text-sm font-semibold text-white/90 flex items-center gap-2"><Globe size={14} className="text-emerald-400" /> Social Handles</h3>
       <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 gap-4">
         {Object.keys(form.socialHandles).map(platform => (
           <div key={platform}>
@@ -198,14 +276,14 @@ function ClientForm({ initial, onSave, onCancel }) {
       <hr className="border-[#2A2A3A]" />
 
       {/* Brand & Strategy */}
-      <h3 className="text-sm font-semibold text-white/90">Brand & Strategy</h3>
+      <h3 className="text-sm font-semibold text-white/90 flex items-center gap-2"><MessageSquare size={14} className="text-emerald-400" /> Brand & Strategy</h3>
       <div>
         <label className="block text-xs text-[#9CA3AF] mb-1.5">Brand Voice</label>
-        <textarea className="w-full bg-[#12121A] border border-[#2A2A3A] rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors resize-none" rows={3} value={form.brandVoice} onChange={e => set('brandVoice', e.target.value)} placeholder="Describe the brand's tone and voice..." />
+        <textarea className={textareaClass} rows={3} value={form.brandVoice} onChange={e => set('brandVoice', e.target.value)} placeholder="Describe the brand's tone and voice..." />
       </div>
       <div>
         <label className="block text-xs text-[#9CA3AF] mb-1.5">Target Audience</label>
-        <textarea className="w-full bg-[#12121A] border border-[#2A2A3A] rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors resize-none" rows={3} value={form.targetAudience} onChange={e => set('targetAudience', e.target.value)} placeholder="Demographics, interests, markets..." />
+        <textarea className={textareaClass} rows={3} value={form.targetAudience} onChange={e => set('targetAudience', e.target.value)} placeholder="Demographics, interests, markets..." />
       </div>
 
       {/* Key Messages */}
@@ -235,11 +313,11 @@ function ClientForm({ initial, onSave, onCancel }) {
 
       <div>
         <label className="block text-xs text-[#9CA3AF] mb-1.5">Goals</label>
-        <textarea className="w-full bg-[#12121A] border border-[#2A2A3A] rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors resize-none" rows={3} value={form.goals} onChange={e => set('goals', e.target.value)} placeholder="Business and social media goals..." />
+        <textarea className={textareaClass} rows={3} value={form.goals} onChange={e => set('goals', e.target.value)} placeholder="Business and social media goals..." />
       </div>
       <div>
-        <label className="block text-xs text-[#9CA3AF] mb-1.5">Notes</label>
-        <textarea className="w-full bg-[#12121A] border border-[#2A2A3A] rounded-md px-3 py-2 text-sm text-white/90 placeholder:text-[#6B7280] focus:border-emerald-500/40 outline-none transition-colors resize-none" rows={3} value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Internal notes..." />
+        <label className="block text-xs text-[#9CA3AF] mb-1.5">Internal Notes</label>
+        <textarea className={textareaClass} rows={3} value={form.notes} onChange={e => set('notes', e.target.value)} placeholder="Internal notes..." />
       </div>
 
       {/* Actions */}
@@ -255,6 +333,66 @@ function ClientForm({ initial, onSave, onCancel }) {
   );
 }
 
+/* ─── Health Score Ring ─── */
+function HealthScoreRing({ score, size = 64 }) {
+  const radius = (size - 8) / 2;
+  const circumference = 2 * Math.PI * radius;
+  const offset = circumference - (score / 100) * circumference;
+  const color = score >= 70 ? '#10B981' : score >= 40 ? '#F59E0B' : '#EF4444';
+  const bgColor = score >= 70 ? 'rgba(16,185,129,0.1)' : score >= 40 ? 'rgba(245,158,11,0.1)' : 'rgba(239,68,68,0.1)';
+
+  return (
+    <div className="relative flex items-center justify-center" style={{ width: size, height: size }}>
+      <svg width={size} height={size} className="transform -rotate-90">
+        <circle cx={size / 2} cy={size / 2} r={radius} fill="none" stroke="#2A2A3A" strokeWidth={4} />
+        <circle
+          cx={size / 2} cy={size / 2} r={radius} fill="none"
+          stroke={color} strokeWidth={4} strokeLinecap="round"
+          strokeDasharray={circumference} strokeDashoffset={offset}
+          className="transition-all duration-700"
+        />
+      </svg>
+      <div className="absolute inset-0 flex items-center justify-center rounded-full" style={{ backgroundColor: bgColor }}>
+        <span className="text-sm font-bold" style={{ color }}>{score}%</span>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Health Score Calculator ─── */
+function calculateHealthScore(client, campaigns, posts, research, strategies, activityFeed) {
+  let score = 0;
+  const now = Date.now();
+  const thirtyDaysAgo = now - 30 * 24 * 60 * 60 * 1000;
+  const sevenDaysAgo = now - 7 * 24 * 60 * 60 * 1000;
+
+  // Active campaigns: 30% weight (max 30)
+  const activeCampaigns = campaigns.filter(c => c.status === 'Active').length;
+  score += Math.min(activeCampaigns * 15, 30);
+
+  // Posts scheduled this week: 20% weight (max 20)
+  const postsThisWeek = posts.filter(p => {
+    if (!p.scheduledDate) return false;
+    const d = new Date(p.scheduledDate).getTime();
+    return d >= sevenDaysAgo && d <= now + 7 * 24 * 60 * 60 * 1000 && (p.status === 'Scheduled' || p.status === 'Published');
+  }).length;
+  score += Math.min(postsThisWeek * 5, 20);
+
+  // Research notes in last 30 days: 20% weight (max 20)
+  const recentResearch = research.filter(r => new Date(r.createdAt).getTime() >= thirtyDaysAgo).length;
+  score += Math.min(recentResearch * 5, 20);
+
+  // Strategies generated: 15% weight (max 15)
+  score += Math.min(strategies.length * 5, 15);
+
+  // Recent activity: 15% weight (max 15)
+  const recentActivity = (activityFeed || []).filter(a => a.clientId === client.id && a.timestamp >= sevenDaysAgo).length;
+  score += Math.min(recentActivity * 3, 15);
+
+  return Math.min(Math.round(score), 100);
+}
+
+/* ─── AI Advisor ─── */
 function AIAdvisor({ client }) {
   const { getClientCampaigns, getClientPosts, getClientResearch } = useStore();
   const [messages, setMessages] = useState([]);
@@ -275,6 +413,8 @@ Client Details:
 - Target Audience: ${client.targetAudience || 'Not defined'}
 - Key Messages: ${(client.keyMessages || []).join('; ')}
 - Goals: ${client.goals || 'Not defined'}
+- Description: ${client.description || 'Not defined'}
+- Current Marketing: ${client.currentMarketing || 'Not defined'}
 
 Active Campaigns: ${campaigns.map(c => `${c.name} (${c.status})`).join(', ') || 'None'}
 Recent Posts: ${posts.slice(0, 5).map(p => `${p.title} [${p.platform}] (${p.status})`).join(', ') || 'None'}
@@ -363,6 +503,141 @@ Provide specific, actionable advice. Be direct and concise. Reference the client
   );
 }
 
+/* ─── Mini Content Calendar ─── */
+function MiniContentCalendar({ client, posts, onNavigate }) {
+  const [currentMonth, setCurrentMonth] = useState(new Date());
+
+  const monthStart = startOfMonth(currentMonth);
+  const monthEnd = endOfMonth(currentMonth);
+  const calStart = startOfWeek(monthStart, { weekStartsOn: 1 });
+  const calEnd = endOfWeek(monthEnd, { weekStartsOn: 1 });
+  const days = eachDayOfInterval({ start: calStart, end: calEnd });
+
+  const getPostsForDay = (day) => {
+    return posts.filter(p => {
+      if (!p.scheduledDate) return false;
+      try {
+        const postDate = typeof p.scheduledDate === 'string' ? parseISO(p.scheduledDate) : new Date(p.scheduledDate);
+        return isSameDay(postDate, day);
+      } catch { return false; }
+    });
+  };
+
+  const statusDotColor = (status) => {
+    switch (status) {
+      case 'Published': return 'bg-emerald-400';
+      case 'Scheduled': return 'bg-blue-400';
+      case 'Approved': return 'bg-cyan-400';
+      case 'Draft': return 'bg-[#6B7280]';
+      default: return 'bg-yellow-400';
+    }
+  };
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <button onClick={() => setCurrentMonth(subMonths(currentMonth, 1))} className="p-1.5 text-[#6B7280] hover:text-white transition-colors rounded hover:bg-white/5">
+          <ChevronLeft size={16} />
+        </button>
+        <h3 className="text-sm font-medium text-white/90">{format(currentMonth, 'MMMM yyyy')}</h3>
+        <button onClick={() => setCurrentMonth(addMonths(currentMonth, 1))} className="p-1.5 text-[#6B7280] hover:text-white transition-colors rounded hover:bg-white/5">
+          <ChevronRight size={16} />
+        </button>
+      </div>
+      <div className="grid grid-cols-7 gap-px bg-[#2A2A3A] rounded-lg overflow-hidden">
+        {['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'].map(d => (
+          <div key={d} className="bg-[#12121A] text-center py-1.5 text-[10px] text-[#6B7280] uppercase tracking-wider font-semibold">{d}</div>
+        ))}
+        {days.map((day, idx) => {
+          const dayPosts = getPostsForDay(day);
+          const inMonth = isSameMonth(day, currentMonth);
+          const today = isToday(day);
+          return (
+            <div
+              key={idx}
+              className={`bg-[#1A1A26] min-h-[60px] p-1 ${!inMonth ? 'opacity-30' : ''} ${today ? 'ring-1 ring-inset ring-emerald-500/40' : ''}`}
+            >
+              <span className={`text-[10px] font-medium ${today ? 'text-emerald-400' : 'text-[#9CA3AF]'}`}>
+                {format(day, 'd')}
+              </span>
+              <div className="mt-0.5 space-y-0.5">
+                {dayPosts.slice(0, 3).map(post => (
+                  <div
+                    key={post.id}
+                    onClick={() => onNavigate('content-calendar', { postId: post.id })}
+                    className="flex items-center gap-1 cursor-pointer hover:bg-white/5 rounded px-0.5 py-0.5 transition-colors"
+                    title={`${post.title} (${post.status})`}
+                  >
+                    <span className={`w-1.5 h-1.5 rounded-full flex-shrink-0 ${statusDotColor(post.status)}`} />
+                    <span className="text-[9px] text-[#9CA3AF] truncate">{post.title}</span>
+                  </div>
+                ))}
+                {dayPosts.length > 3 && (
+                  <span className="text-[9px] text-[#6B7280] pl-0.5">+{dayPosts.length - 3} more</span>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="flex items-center gap-4 mt-3 text-[10px] text-[#6B7280]">
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-emerald-400" /> Published</span>
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-blue-400" /> Scheduled</span>
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-[#6B7280]" /> Draft</span>
+        <span className="flex items-center gap-1"><span className="w-1.5 h-1.5 rounded-full bg-yellow-400" /> Other</span>
+      </div>
+    </div>
+  );
+}
+
+/* ─── Strategy Tab ─── */
+function StrategyTab({ client, onNavigate }) {
+  const store = useStore();
+  const strategies = store.getClientStrategies(client.id);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <p className="text-sm text-[#9CA3AF]">{strategies.length} strateg{strategies.length === 1 ? 'y' : 'ies'} generated</p>
+        <button
+          onClick={() => onNavigate('strategy-engine', { clientId: client.id })}
+          className="px-4 py-2 bg-emerald-500 hover:bg-emerald-600 text-white text-sm font-medium rounded-md transition-colors flex items-center gap-2"
+        >
+          <Lightbulb size={14} /> Generate New Strategy
+        </button>
+      </div>
+      {strategies.length === 0 ? (
+        <div className="text-center py-12">
+          <Lightbulb size={32} className="text-[#6B7280] mx-auto mb-3" />
+          <p className="text-sm text-[#6B7280]">No strategies generated yet</p>
+          <p className="text-xs text-[#6B7280] mt-1">Head to the Strategy Engine to create one for {client.name}</p>
+        </div>
+      ) : (
+        <div className="space-y-3">
+          {strategies.sort((a, b) => (b.createdAt || 0) - (a.createdAt || 0)).map(strat => (
+            <div
+              key={strat.id}
+              className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg p-4 hover:border-[rgba(16,185,129,0.3)] transition-colors cursor-pointer"
+              onClick={() => onNavigate('strategy-engine', { strategyId: strat.id })}
+            >
+              <div className="flex items-center justify-between">
+                <div className="flex-1 min-w-0">
+                  <h3 className="text-sm font-medium text-white/90">{strat.title || 'Untitled Strategy'}</h3>
+                  <p className="text-xs text-[#6B7280] mt-0.5 line-clamp-2">{strat.summary || strat.content?.slice(0, 120) || 'No summary'}</p>
+                </div>
+                <div className="flex-shrink-0 ml-3 text-right">
+                  <span className="text-[10px] text-[#6B7280]">{strat.createdAt ? formatDate(strat.createdAt) : 'Unknown date'}</span>
+                </div>
+              </div>
+            </div>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/* ─── Client Profile ─── */
 function ClientProfile({ client, onBack, onNavigate }) {
   const store = useStore();
   const [activeTab, setActiveTab] = useState('overview');
@@ -371,11 +646,19 @@ function ClientProfile({ client, onBack, onNavigate }) {
   const campaigns = store.getClientCampaigns(client.id);
   const posts = store.getClientPosts(client.id);
   const research = store.getClientResearch(client.id);
+  const strategies = store.getClientStrategies(client.id);
+
+  const healthScore = useMemo(() =>
+    calculateHealthScore(client, campaigns, posts, research, strategies, store.activityFeed),
+    [client, campaigns, posts, research, strategies, store.activityFeed]
+  );
 
   const tabs = [
     { key: 'overview', label: 'Overview' },
     { key: 'campaigns', label: `Campaigns (${campaigns.length})` },
     { key: 'content', label: `Content (${posts.length})` },
+    { key: 'calendar', label: 'Calendar' },
+    { key: 'strategies', label: `Strategies (${strategies.length})` },
     { key: 'research', label: `Research (${research.length})` },
     { key: 'ai-advisor', label: 'AI Advisor' },
   ];
@@ -402,13 +685,16 @@ function ClientProfile({ client, onBack, onNavigate }) {
     Prospect: 'text-blue-400 bg-blue-500/10',
   };
 
+  const contacts = client.contacts?.length ? client.contacts : (client.contactName ? [{ name: client.contactName, role: '', email: client.contactEmail, phone: client.contactPhone }] : []);
+
   return (
     <div>
-      {/* Header */}
-      <div className="flex items-center gap-3 mb-6">
+      {/* Header with Health Score */}
+      <div className="flex items-center gap-4 mb-6">
         <button onClick={onBack} className="text-[#6B7280] hover:text-white transition-colors p-1">
           <ArrowLeft size={18} />
         </button>
+        <HealthScoreRing score={healthScore} size={56} />
         <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold" style={{ background: `${color}20`, color }}>
           {getInitials(client.name)}
         </div>
@@ -418,6 +704,12 @@ function ClientProfile({ client, onBack, onNavigate }) {
             <span>{client.sector}</span>
             <span>-</span>
             <span>{client.partnershipType}</span>
+            {client.dateOnboarded && (
+              <>
+                <span>-</span>
+                <span>Since {formatDate(client.dateOnboarded)}</span>
+              </>
+            )}
           </div>
         </div>
         <span className={`text-xs px-2.5 py-1 rounded-full font-medium ${statusColors[client.status] || 'text-[#6B7280] bg-[#12121A]'}`}>
@@ -431,13 +723,30 @@ function ClientProfile({ client, onBack, onNavigate }) {
         </button>
       </div>
 
+      {/* Health Score Breakdown */}
+      <div className="grid grid-cols-5 gap-2 mb-6">
+        {[
+          { label: 'Active Campaigns', value: campaigns.filter(c => c.status === 'Active').length, weight: '30%' },
+          { label: 'Posts This Week', value: posts.filter(p => p.scheduledDate && (p.status === 'Scheduled' || p.status === 'Published')).length, weight: '20%' },
+          { label: 'Research (30d)', value: research.filter(r => Date.now() - new Date(r.createdAt).getTime() < 30 * 86400000).length, weight: '20%' },
+          { label: 'Strategies', value: strategies.length, weight: '15%' },
+          { label: 'Recent Activity', value: (store.activityFeed || []).filter(a => a.clientId === client.id && a.timestamp >= Date.now() - 7 * 86400000).length, weight: '15%' },
+        ].map((item, i) => (
+          <div key={i} className="bg-[#12121A] border border-[#2A2A3A] rounded-md p-2 text-center">
+            <div className="text-lg font-bold text-white/90">{item.value}</div>
+            <div className="text-[9px] text-[#6B7280] leading-tight">{item.label}</div>
+            <div className="text-[8px] text-[#6B7280] mt-0.5">({item.weight})</div>
+          </div>
+        ))}
+      </div>
+
       {/* Tabs */}
-      <div className="flex gap-1 border-b border-[#2A2A3A] mb-6">
+      <div className="flex gap-1 border-b border-[#2A2A3A] mb-6 overflow-x-auto">
         {tabs.map(tab => (
           <button
             key={tab.key}
             onClick={() => { setActiveTab(tab.key); setEditing(false); }}
-            className={`px-4 py-2.5 text-sm font-medium transition-colors relative ${
+            className={`px-4 py-2.5 text-sm font-medium transition-colors relative whitespace-nowrap ${
               activeTab === tab.key
                 ? 'text-emerald-400'
                 : 'text-[#6B7280] hover:text-white'
@@ -453,12 +762,57 @@ function ClientProfile({ client, onBack, onNavigate }) {
       {activeTab === 'overview' && !editing && (
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
           <div className="space-y-4">
-            <InfoCard title="Contact" icon={Mail}>
-              <InfoRow label="Name" value={client.contactName} />
-              <InfoRow label="Email" value={client.contactEmail} />
-              <InfoRow label="Phone" value={client.contactPhone} />
+            {/* Business Info */}
+            <InfoCard title="Business Information" icon={Building2}>
+              <InfoRow label="Sector" value={client.sector} />
+              <InfoRow label="Partnership" value={client.partnershipType} />
+              <InfoRow label="Budget Range" value={client.budgetRange} />
+              <InfoRow label="Priority" value={client.priority} />
+              <InfoRow label="Platforms" value={(client.platforms || []).join(', ')} />
               <InfoRow label="Website" value={client.website} link />
+              {client.dateOnboarded && <InfoRow label="Onboarded" value={formatDate(client.dateOnboarded)} />}
+              <InfoRow label="Created" value={formatDate(client.createdAt)} />
+              <InfoRow label="Last Updated" value={relativeTime(client.updatedAt)} />
             </InfoCard>
+
+            {client.description && (
+              <InfoCard title="Business Description" icon={BookOpen}>
+                <p className="text-sm text-[#9CA3AF] whitespace-pre-wrap">{client.description}</p>
+              </InfoCard>
+            )}
+
+            {/* Contacts */}
+            <InfoCard title={`Key Contacts (${contacts.length})`} icon={Users}>
+              {contacts.length > 0 ? (
+                <div className="space-y-3">
+                  {contacts.map((contact, idx) => (
+                    <div key={idx} className={`${idx > 0 ? 'pt-3 border-t border-[#2A2A3A]' : ''}`}>
+                      <div className="flex items-center gap-2 mb-1">
+                        <span className="text-sm font-medium text-white/90">{contact.name || 'Unnamed'}</span>
+                        {contact.role && <span className="text-[10px] text-[#6B7280] bg-[#12121A] px-1.5 py-0.5 rounded">{contact.role}</span>}
+                        {idx === 0 && <span className="text-[9px] text-emerald-400 bg-emerald-500/10 px-1.5 py-0.5 rounded uppercase tracking-wider">Primary</span>}
+                      </div>
+                      <div className="flex flex-wrap gap-3 text-xs text-[#9CA3AF]">
+                        {contact.email && (
+                          <a href={`mailto:${contact.email}`} className="flex items-center gap-1 hover:text-emerald-400 transition-colors">
+                            <Mail size={11} /> {contact.email}
+                          </a>
+                        )}
+                        {contact.phone && (
+                          <a href={`tel:${contact.phone}`} className="flex items-center gap-1 hover:text-emerald-400 transition-colors">
+                            <Phone size={11} /> {contact.phone}
+                          </a>
+                        )}
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-[#6B7280]">No contacts configured</p>
+              )}
+            </InfoCard>
+
+            {/* Social Handles */}
             <InfoCard title="Social Handles" icon={Globe}>
               {Object.entries(client.socialHandles || {}).filter(([,v]) => v).map(([k, v]) => (
                 <InfoRow key={k} label={k} value={v} />
@@ -467,15 +821,15 @@ function ClientProfile({ client, onBack, onNavigate }) {
                 <p className="text-xs text-[#6B7280]">No social handles configured</p>
               )}
             </InfoCard>
-            <InfoCard title="Details" icon={Building2}>
-              <InfoRow label="Budget Range" value={client.budgetRange} />
-              <InfoRow label="Priority" value={client.priority} />
-              <InfoRow label="Platforms" value={(client.platforms || []).join(', ')} />
-              <InfoRow label="Created" value={formatDate(client.createdAt)} />
-              <InfoRow label="Last Updated" value={relativeTime(client.updatedAt)} />
-            </InfoCard>
           </div>
           <div className="space-y-4">
+            {/* Marketing */}
+            {client.currentMarketing && (
+              <InfoCard title="Current Marketing" icon={TrendingUp}>
+                <p className="text-sm text-[#9CA3AF] whitespace-pre-wrap">{client.currentMarketing}</p>
+              </InfoCard>
+            )}
+
             <InfoCard title="Brand Voice" icon={MessageSquare}>
               <p className="text-sm text-[#9CA3AF] whitespace-pre-wrap">{client.brandVoice || 'Not defined'}</p>
             </InfoCard>
@@ -497,7 +851,7 @@ function ClientProfile({ client, onBack, onNavigate }) {
               <p className="text-sm text-[#9CA3AF] whitespace-pre-wrap">{client.goals || 'Not defined'}</p>
             </InfoCard>
             {client.notes && (
-              <InfoCard title="Notes" icon={BookOpen}>
+              <InfoCard title="Internal Notes" icon={BookOpen}>
                 <p className="text-sm text-[#9CA3AF] whitespace-pre-wrap">{client.notes}</p>
               </InfoCard>
             )}
@@ -575,6 +929,16 @@ function ClientProfile({ client, onBack, onNavigate }) {
         </div>
       )}
 
+      {activeTab === 'calendar' && (
+        <div className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg p-5">
+          <MiniContentCalendar client={client} posts={posts} onNavigate={onNavigate} />
+        </div>
+      )}
+
+      {activeTab === 'strategies' && (
+        <StrategyTab client={client} onNavigate={onNavigate} />
+      )}
+
       {activeTab === 'research' && (
         <div>
           {research.length === 0 ? (
@@ -612,6 +976,7 @@ function ClientProfile({ client, onBack, onNavigate }) {
   );
 }
 
+/* ─── Shared Components ─── */
 function InfoCard({ title, icon: Icon, children }) {
   return (
     <div className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg p-4">
@@ -653,14 +1018,14 @@ function EmptyState({ icon: Icon, message, action, onAction }) {
   );
 }
 
+/* ─── Main Export ─── */
 export default function ClientHub({ onNavigate, params }) {
   const store = useStore();
-  const [view, setView] = useState('list'); // list, add, profile
+  const [view, setView] = useState('list');
   const [selectedClient, setSelectedClient] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [statusFilter, setStatusFilter] = useState('all');
 
-  // Handle incoming params
   useEffect(() => {
     if (params?.action === 'add') {
       setView('add');
@@ -673,7 +1038,6 @@ export default function ClientHub({ onNavigate, params }) {
     }
   }, [params, store.clients]);
 
-  // Keep selectedClient in sync
   useEffect(() => {
     if (selectedClient) {
       const updated = store.clients.find(c => c.id === selectedClient.id);
@@ -686,7 +1050,7 @@ export default function ClientHub({ onNavigate, params }) {
       if (statusFilter !== 'all' && c.status !== statusFilter) return false;
       if (searchQuery) {
         const q = searchQuery.toLowerCase();
-        return (c.name.toLowerCase().includes(q) || c.sector.toLowerCase().includes(q) || c.contactName.toLowerCase().includes(q));
+        return (c.name.toLowerCase().includes(q) || c.sector.toLowerCase().includes(q) || (c.contactName || '').toLowerCase().includes(q));
       }
       return true;
     });
@@ -779,13 +1143,19 @@ export default function ClientHub({ onNavigate, params }) {
         <div className="space-y-2">
           {filteredClients.map(client => {
             const color = getClientColor(client.id);
-            const activeCamps = store.getClientCampaigns(client.id).filter(c => c.status === 'Active').length;
+            const clientCampaigns = store.getClientCampaigns(client.id);
+            const clientPosts = store.getClientPosts(client.id);
+            const clientResearch = store.getClientResearch(client.id);
+            const clientStrategies = store.getClientStrategies(client.id);
+            const activeCamps = clientCampaigns.filter(c => c.status === 'Active').length;
+            const health = calculateHealthScore(client, clientCampaigns, clientPosts, clientResearch, clientStrategies, store.activityFeed);
             return (
               <div
                 key={client.id}
                 onClick={() => { setSelectedClient(client); setView('profile'); }}
                 className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg p-4 hover:border-[rgba(16,185,129,0.3)] transition-colors cursor-pointer flex items-center gap-4"
               >
+                <HealthScoreRing score={health} size={40} />
                 <div className="w-10 h-10 rounded-full flex items-center justify-center text-sm font-semibold flex-shrink-0" style={{ background: `${color}20`, color }}>
                   {getInitials(client.name)}
                 </div>

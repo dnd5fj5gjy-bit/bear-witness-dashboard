@@ -1,4 +1,4 @@
-import { useState, useMemo, useEffect, useCallback } from 'react';
+import { useState, useMemo, useEffect, useCallback, useRef } from 'react';
 import { useStore } from '../hooks/useStore';
 import { callAI } from '../lib/ai';
 import {
@@ -9,10 +9,31 @@ import {
   FileText, Plus, Search, ArrowLeft, Trash2, X, Check,
   ChevronRight, ChevronLeft, Sparkles, Copy, Eye, Edit3,
   RefreshCw, Download, ChevronDown, ChevronUp, Briefcase,
-  Users, Target, Building
+  Users, Target, Building, Printer, Share2, Clock, History,
+  Save, ExternalLink, Mail, Code, AlertCircle, Send,
+  CheckCircle, XCircle, Pause, RotateCcw
 } from 'lucide-react';
 
 const PROPOSAL_TONES = ['Partnership', 'Commercial', 'Vision-led', 'Authoritative'];
+
+const PROPOSAL_STATUSES = [
+  { key: 'Draft', label: 'Draft', color: '#F59E0B', icon: Edit3 },
+  { key: 'Ready for Review', label: 'Ready for Review', color: '#3B82F6', icon: Eye },
+  { key: 'Sent', label: 'Sent', color: '#8B5CF6', icon: Send },
+  { key: 'Accepted', label: 'Accepted', color: '#10B981', icon: CheckCircle },
+  { key: 'Declined', label: 'Declined', color: '#EF4444', icon: XCircle },
+];
+
+const PROPOSAL_SECTIONS_ORDER = [
+  'Cover',
+  'Executive Context',
+  'The Opportunity',
+  'Our Approach',
+  'The Strategy',
+  'Expected Outcomes',
+  'Investment',
+  'Call to Action',
+];
 
 const PROPOSAL_SYSTEM_BASE = `You are the Bear Witness Proposal Builder. You create professional, persuasive business proposals for Bear Witness (bearwitness.world), a social media strategy agency within Bear Grylls Ventures.
 
@@ -28,28 +49,364 @@ The tone should be premium, strategic, and grounded. This is consultancy work fo
 
 const ANALYSIS_SYSTEM = `${PROPOSAL_SYSTEM_BASE}
 
-Your job in this phase: analyse the business opportunity. Identify the core value proposition, the client's likely pain points, the strategic fit with Bear Witness, and the most compelling angles for the proposal. Be thorough but concise. Output a structured analysis.`;
+Your job in this phase: analyse the business opportunity. Identify the core value proposition, the client's likely pain points, the strategic fit with Bear Witness, and the most compelling angles for the proposal. Be thorough but concise. Output a structured analysis with ## headings and bullet points.`;
 
 const PROPOSAL_SYSTEM = `${PROPOSAL_SYSTEM_BASE}
 
-Your job: write a complete client proposal. Structure it with these sections:
-1. Cover (title, client name, date, prepared by)
-2. Executive Context (why this matters now)
-3. The Opportunity (what the client gains)
-4. Our Approach (Bear Witness methodology overview)
-5. The Strategy (high-level strategic direction)
-6. Expected Outcomes (realistic, time-bound)
-7. Investment (pricing tiers or ranges)
-8. Call to Action (clear next step)
+Your job: write a complete client proposal. Use markdown formatting with ## headings for each section. Use bullet points for lists and **bold** for key terms.
+
+Structure it with these sections (use these exact ## headings):
+## Cover
+## Executive Context
+## The Opportunity
+## Our Approach
+## The Strategy
+## Expected Outcomes
+## Investment
+## Call to Action
 
 Make it compelling, specific to the client, and ready to present.`;
 
-function LoadingSkeleton({ lines = 5 }) {
+// ── Markdown Renderer ────────────────────────────────────────────────
+function renderMarkdownContent(text) {
+  if (!text) return null;
+  const lines = text.split('\n');
+  const elements = [];
+  let listItems = [];
+  let listKey = 0;
+
+  const flushList = () => {
+    if (listItems.length > 0) {
+      elements.push(
+        <ul key={`list-${listKey++}`} className="space-y-1.5 ml-1 my-2">
+          {listItems.map((item, i) => (
+            <li key={i} className="flex gap-2 text-sm leading-relaxed">
+              <span className="text-[#10B981] mt-1.5 shrink-0 w-1.5 h-1.5 rounded-full bg-[#10B981]/60 inline-block" />
+              <span>{renderInlineMarkdown(item)}</span>
+            </li>
+          ))}
+        </ul>
+      );
+      listItems = [];
+    }
+  };
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+
+    if (line.match(/^\s*[-*]\s+/)) {
+      listItems.push(line.replace(/^\s*[-*]\s+/, ''));
+      continue;
+    }
+
+    if (line.match(/^\s*\d+[.)]\s+/)) {
+      listItems.push(line.replace(/^\s*\d+[.)]\s+/, ''));
+      continue;
+    }
+
+    flushList();
+
+    if (line.match(/^#{3,4}\s/)) {
+      const heading = line.replace(/^#{3,4}\s+/, '');
+      elements.push(
+        <h4 key={i} className="font-semibold text-sm mt-4 mb-1">{renderInlineMarkdown(heading)}</h4>
+      );
+      continue;
+    }
+
+    if (!line.trim()) {
+      elements.push(<div key={i} className="h-2" />);
+      continue;
+    }
+
+    elements.push(
+      <p key={i} className="text-sm leading-relaxed">{renderInlineMarkdown(line)}</p>
+    );
+  }
+
+  flushList();
+  return elements;
+}
+
+function renderInlineMarkdown(text) {
+  if (!text) return text;
+  const parts = text.split(/(\*\*[^*]+\*\*)/g);
+  return parts.map((part, i) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={i} className="font-semibold">{part.slice(2, -2)}</strong>;
+    }
+    return part;
+  });
+}
+
+// ── Section Parser ───────────────────────────────────────────────────
+function parseProposalSections(text) {
+  if (!text) return [];
+  const lines = text.split('\n');
+  const sections = [];
+  let current = null;
+
+  for (const line of lines) {
+    if (line.match(/^#{1,2}\s/)) {
+      if (current) sections.push(current);
+      const title = line.replace(/^#{1,2}\s+/, '');
+      current = { title, content: '', icon: getSectionIcon(title) };
+    } else if (current) {
+      current.content += line + '\n';
+    } else {
+      if (line.trim()) {
+        if (!current) current = { title: '', content: '', icon: null };
+        current.content += line + '\n';
+      }
+    }
+  }
+  if (current) sections.push(current);
+  return sections;
+}
+
+function getSectionIcon(title) {
+  const lower = title.toLowerCase();
+  if (lower.includes('cover')) return FileText;
+  if (lower.includes('executive') || lower.includes('context')) return Briefcase;
+  if (lower.includes('opportunity')) return Target;
+  if (lower.includes('approach')) return Sparkles;
+  if (lower.includes('strategy')) return Sparkles;
+  if (lower.includes('outcome')) return CheckCircle;
+  if (lower.includes('investment') || lower.includes('pricing')) return Building;
+  if (lower.includes('call to action') || lower.includes('next step')) return Send;
+  return FileText;
+}
+
+// ── Skeleton Loading with Section Placeholders ──────────────────────
+function ProposalLoadingSkeleton({ phase }) {
+  const sections = phase === 'analysis'
+    ? ['Value Proposition', 'Pain Points', 'Strategic Fit', 'Compelling Angles']
+    : PROPOSAL_SECTIONS_ORDER;
+
   return (
-    <div className="space-y-3 animate-pulse">
-      {Array.from({ length: lines }).map((_, i) => (
-        <div key={i} className="h-4 bg-[#1A1A26] rounded" style={{ width: `${90 - i * 10}%` }} />
+    <div className="space-y-4 animate-pulse">
+      {sections.map((name, si) => (
+        <div key={si} className="bg-[#12121A] border border-[#2A2A3A] rounded-lg p-4">
+          <div className="h-4 bg-[#222233] rounded w-32 mb-3" />
+          <div className="space-y-2">
+            {Array.from({ length: 2 + Math.floor(Math.random() * 2) }).map((_, i) => (
+              <div key={i} className="h-3 bg-[#1A1A26] rounded" style={{ width: `${90 - i * 15 - Math.random() * 10}%` }} />
+            ))}
+          </div>
+          <div className="text-[#2A2A3A] text-xs mt-2">{name}</div>
+        </div>
       ))}
+    </div>
+  );
+}
+
+// ── Status Badge ─────────────────────────────────────────────────────
+function StatusBadge({ status, size = 'sm' }) {
+  const config = PROPOSAL_STATUSES.find(s => s.key === status) || PROPOSAL_STATUSES[0];
+  const Icon = config.icon;
+  return (
+    <span
+      className={classNames(
+        'inline-flex items-center gap-1 rounded-md font-medium',
+        size === 'sm' && 'px-2 py-0.5 text-xs',
+        size === 'md' && 'px-3 py-1 text-sm'
+      )}
+      style={{ backgroundColor: `${config.color}15`, color: config.color }}
+    >
+      <Icon size={size === 'sm' ? 10 : 14} />
+      {config.label}
+    </span>
+  );
+}
+
+// ── Status Selector ──────────────────────────────────────────────────
+function StatusSelector({ currentStatus, onStatusChange }) {
+  const [open, setOpen] = useState(false);
+  return (
+    <div className="relative">
+      <button
+        onClick={() => setOpen(!open)}
+        className="flex items-center gap-1.5"
+      >
+        <StatusBadge status={currentStatus} size="md" />
+        <ChevronDown size={14} className="text-[#6B7280]" />
+      </button>
+      {open && (
+        <>
+          <div className="fixed inset-0 z-40" onClick={() => setOpen(false)} />
+          <div className="absolute top-full left-0 mt-1 z-50 bg-[#1A1A26] border border-[#2A2A3A] rounded-lg shadow-xl p-1 min-w-[180px]">
+            {PROPOSAL_STATUSES.map(s => {
+              const Icon = s.icon;
+              return (
+                <button
+                  key={s.key}
+                  onClick={() => { onStatusChange(s.key); setOpen(false); }}
+                  className={classNames(
+                    'w-full flex items-center gap-2 px-3 py-2 text-sm rounded-md transition-colors text-left',
+                    currentStatus === s.key ? 'bg-[#222233] text-[rgba(255,255,255,0.9)]' : 'text-[#9CA3AF] hover:bg-[#222233] hover:text-[rgba(255,255,255,0.9)]'
+                  )}
+                >
+                  <Icon size={14} style={{ color: s.color }} />
+                  {s.label}
+                </button>
+              );
+            })}
+          </div>
+        </>
+      )}
+    </div>
+  );
+}
+
+// ── Section Editor ───────────────────────────────────────────────────
+function SectionCard({ title, content, icon: IconComponent, isPreview, onEdit, sectionIndex }) {
+  const [expanded, setExpanded] = useState(true);
+  const [editing, setEditing] = useState(false);
+  const [editContent, setEditContent] = useState(content);
+  const textareaRef = useRef(null);
+
+  useEffect(() => {
+    setEditContent(content);
+  }, [content]);
+
+  useEffect(() => {
+    if (editing && textareaRef.current) {
+      textareaRef.current.focus();
+      textareaRef.current.style.height = 'auto';
+      textareaRef.current.style.height = textareaRef.current.scrollHeight + 'px';
+    }
+  }, [editing]);
+
+  const handleSaveEdit = () => {
+    if (onEdit) onEdit(sectionIndex, editContent);
+    setEditing(false);
+  };
+
+  const handleCancelEdit = () => {
+    setEditContent(content);
+    setEditing(false);
+  };
+
+  if (isPreview) {
+    return (
+      <div className="mb-8">
+        {title && (
+          <h2 className="text-xl font-bold text-[#111] mb-3 pb-2 border-b border-gray-200">{title}</h2>
+        )}
+        <div className="text-gray-700 text-base leading-relaxed prose prose-sm">
+          {renderMarkdownContent(content)}
+        </div>
+      </div>
+    );
+  }
+
+  return (
+    <div className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg overflow-hidden">
+      <div className="flex items-center justify-between px-4 py-3 bg-[#12121A]">
+        <button
+          onClick={() => setExpanded(!expanded)}
+          className="flex items-center gap-2 text-left flex-1 min-w-0"
+        >
+          {IconComponent && <IconComponent size={16} className="text-[#10B981] shrink-0" />}
+          <h3 className="text-[rgba(255,255,255,0.9)] font-semibold text-sm truncate">{title || 'Content'}</h3>
+          {expanded ? <ChevronUp size={14} className="text-[#6B7280] shrink-0" /> : <ChevronDown size={14} className="text-[#6B7280] shrink-0" />}
+        </button>
+        {!editing && onEdit && (
+          <button
+            onClick={(e) => { e.stopPropagation(); setEditing(true); setExpanded(true); }}
+            className="text-[#6B7280] hover:text-[#10B981] p-1 ml-2 shrink-0"
+            title="Edit section"
+          >
+            <Edit3 size={14} />
+          </button>
+        )}
+      </div>
+      {expanded && (
+        <div className="px-4 pb-4 pt-2">
+          {editing ? (
+            <div className="space-y-3">
+              <textarea
+                ref={textareaRef}
+                value={editContent}
+                onChange={e => {
+                  setEditContent(e.target.value);
+                  e.target.style.height = 'auto';
+                  e.target.style.height = e.target.scrollHeight + 'px';
+                }}
+                className="w-full resize-none min-h-[120px] text-sm font-mono"
+              />
+              <div className="flex items-center gap-2">
+                <button
+                  onClick={handleSaveEdit}
+                  className="flex items-center gap-1.5 px-3 py-1.5 bg-[#10B981] hover:bg-[#059669] text-white text-xs font-medium rounded-lg"
+                >
+                  <Save size={12} /> Save
+                </button>
+                <button
+                  onClick={handleCancelEdit}
+                  className="flex items-center gap-1.5 px-3 py-1.5 text-[#9CA3AF] hover:text-[rgba(255,255,255,0.9)] text-xs"
+                >
+                  Cancel
+                </button>
+              </div>
+            </div>
+          ) : (
+            <div className="text-[#9CA3AF]">
+              {renderMarkdownContent(content)}
+            </div>
+          )}
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ── Version History ──────────────────────────────────────────────────
+function VersionHistory({ versions, onRestore }) {
+  const [expanded, setExpanded] = useState(false);
+
+  if (!versions || versions.length <= 1) return null;
+
+  return (
+    <div className="bg-[#12121A] border border-[#2A2A3A] rounded-lg overflow-hidden">
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-4 py-2.5 hover:bg-[#1A1A26] transition-colors"
+      >
+        <div className="flex items-center gap-2">
+          <History size={14} className="text-[#3B82F6]" />
+          <span className="text-[#9CA3AF] text-sm font-medium">Version History</span>
+          <span className="text-[#6B7280] text-xs">({versions.length} versions)</span>
+        </div>
+        {expanded ? <ChevronUp size={14} className="text-[#6B7280]" /> : <ChevronDown size={14} className="text-[#6B7280]" />}
+      </button>
+      {expanded && (
+        <div className="border-t border-[#2A2A3A] p-3 space-y-2 max-h-[300px] overflow-y-auto">
+          {versions.map((v, i) => (
+            <div key={i} className="flex items-center justify-between p-2 rounded-lg hover:bg-[#1A1A26] transition-colors">
+              <div>
+                <div className="flex items-center gap-2">
+                  <span className="text-[rgba(255,255,255,0.9)] text-sm font-medium">
+                    {i === 0 ? 'Current version' : `Version ${versions.length - i}`}
+                  </span>
+                  {i === 0 && <span className="text-[#10B981] text-xs bg-[#10B981]/10 px-1.5 py-0.5 rounded">Active</span>}
+                </div>
+                <span className="text-[#6B7280] text-xs">
+                  {formatDateTime(v.timestamp)} - {v.reason || 'Edited'}
+                </span>
+              </div>
+              {i > 0 && onRestore && (
+                <button
+                  onClick={() => onRestore(v)}
+                  className="flex items-center gap-1 text-[#3B82F6] hover:text-[#60A5FA] text-xs px-2 py-1"
+                >
+                  <RotateCcw size={12} /> Restore
+                </button>
+              )}
+            </div>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
@@ -58,7 +415,6 @@ function LoadingSkeleton({ lines = 5 }) {
 function SourceSelector({ strategies, clients, onSelect }) {
   const [fromStrategy, setFromStrategy] = useState(null);
 
-  // Check for strategy data in sessionStorage (from Strategy Engine)
   useEffect(() => {
     try {
       const stored = sessionStorage.getItem('bw:proposal-from-strategy');
@@ -365,100 +721,217 @@ function ProposalBriefForm({ brief, setBrief, onGenerate, loading, sourceContext
   );
 }
 
-// ── Proposal Display ───────────────────────────────────────────────────
-function ProposalDisplay({ proposal, onSave, onCopy, onCopyStructured, isSavedView }) {
-  const [copied, setCopied] = useState(false);
-  const [copiedStructured, setCopiedStructured] = useState(false);
+// ── Proposal Display (fully featured) ─────────────────────────────────
+function ProposalDisplay({ proposal, onSave, onUpdateContent, onStatusChange, isSavedView }) {
+  const [previewMode, setPreviewMode] = useState(false);
+  const [copiedMd, setCopiedMd] = useState(false);
+  const [copiedHtml, setCopiedHtml] = useState(false);
+  const [copiedLink, setCopiedLink] = useState(false);
 
-  const handleCopy = async () => {
-    try {
-      await navigator.clipboard.writeText(proposal.content);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = proposal.content;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      setCopied(true);
-      setTimeout(() => setCopied(false), 2000);
-    }
+  const sections = useMemo(() => parseProposalSections(proposal?.content), [proposal?.content]);
+
+  const fallbackCopy = (text) => {
+    const ta = document.createElement('textarea');
+    ta.value = text;
+    document.body.appendChild(ta);
+    ta.select();
+    document.execCommand('copy');
+    document.body.removeChild(ta);
   };
 
-  const handleCopyStructured = async () => {
-    const structured = JSON.stringify({
+  const handleCopyMarkdown = async () => {
+    const md = proposal.content || '';
+    try { await navigator.clipboard.writeText(md); } catch { fallbackCopy(md); }
+    setCopiedMd(true);
+    setTimeout(() => setCopiedMd(false), 2000);
+  };
+
+  const handleCopyHTML = async () => {
+    const html = (proposal.content || '')
+      .replace(/^## (.+)$/gm, '<h2>$1</h2>')
+      .replace(/^### (.+)$/gm, '<h3>$1</h3>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/^\s*[-*]\s+(.+)$/gm, '<li>$1</li>')
+      .replace(/\n\n/g, '</p><p>')
+      .replace(/\n/g, '<br/>');
+    try { await navigator.clipboard.writeText(`<div>${html}</div>`); } catch { fallbackCopy(`<div>${html}</div>`); }
+    setCopiedHtml(true);
+    setTimeout(() => setCopiedHtml(false), 2000);
+  };
+
+  const handlePrint = () => {
+    const clientName = proposal.clientName || proposal.brief?.clientName || 'Client';
+    const contentHtml = (proposal.content || '')
+      .replace(/^## (.+)$/gm, '<h2 style="font-size:22px;margin-top:36px;margin-bottom:14px;color:#111;font-weight:700;">$1</h2>')
+      .replace(/^### (.+)$/gm, '<h3 style="font-size:17px;margin-top:24px;margin-bottom:10px;color:#333;font-weight:600;">$1</h3>')
+      .replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>')
+      .replace(/^\s*[-*]\s+(.+)$/gm, '<li style="margin-left:20px;margin-bottom:6px;line-height:1.7;">$1</li>')
+      .replace(/\n\n/g, '</p><p style="margin-bottom:14px;line-height:1.7;color:#333;">')
+      .replace(/\n/g, '<br/>');
+
+    const html = `<!DOCTYPE html><html><head><title>${proposal.title || 'Proposal'} - ${clientName}</title><style>
+      body { font-family: 'Georgia', serif; max-width: 750px; margin: 40px auto; padding: 0 40px; color: #111; line-height: 1.7; }
+      h1 { font-size: 32px; border-bottom: 3px solid #10B981; padding-bottom: 16px; margin-bottom: 8px; }
+      h2 { color: #10B981; page-break-after: avoid; }
+      li { list-style-type: disc; }
+      .meta { color: #666; font-size: 14px; margin-bottom: 40px; }
+      @media print { body { margin: 0; padding: 20px; } }
+    </style></head><body>
+      <h1>${proposal.title || 'Proposal'}</h1>
+      <div class="meta">
+        <p>Prepared for: <strong>${clientName}</strong></p>
+        <p>Date: ${new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+        <p>Prepared by: Bear Witness</p>
+      </div>
+      <p style="margin-bottom:14px;line-height:1.7;color:#333;">${contentHtml}</p>
+    </body></html>`;
+
+    const win = window.open('', '_blank');
+    win.document.write(html);
+    win.document.close();
+    setTimeout(() => win.print(), 500);
+  };
+
+  const handleShareLink = async () => {
+    const data = {
       title: proposal.title,
       client: proposal.clientName,
       content: proposal.content,
-      analysis: proposal.analysis,
-      brief: proposal.brief,
-      createdAt: proposal.createdAt,
-    }, null, 2);
-    try {
-      await navigator.clipboard.writeText(structured);
-      setCopiedStructured(true);
-      setTimeout(() => setCopiedStructured(false), 2000);
-    } catch {
-      const ta = document.createElement('textarea');
-      ta.value = structured;
-      document.body.appendChild(ta);
-      ta.select();
-      document.execCommand('copy');
-      document.body.removeChild(ta);
-      setCopiedStructured(true);
-      setTimeout(() => setCopiedStructured(false), 2000);
-    }
+      date: new Date().toISOString(),
+    };
+    const encoded = btoa(unescape(encodeURIComponent(JSON.stringify(data))));
+    const url = `data:text/html;base64,${btoa(unescape(encodeURIComponent(
+      `<!DOCTYPE html><html><head><title>${proposal.title}</title><style>body{font-family:Georgia,serif;max-width:750px;margin:40px auto;padding:0 40px;color:#111;line-height:1.7;}h2{color:#10B981;margin-top:32px;}li{list-style-type:disc;margin-left:20px;}</style></head><body><h1>${proposal.title}</h1><p style="color:#666;">Prepared for: ${proposal.clientName || ''}</p>${(proposal.content || '').replace(/^## (.+)$/gm, '<h2>$1</h2>').replace(/\*\*([^*]+)\*\*/g, '<strong>$1</strong>').replace(/^\s*[-*]\s+(.+)$/gm, '<li>$1</li>').replace(/\n\n/g, '</p><p>').replace(/\n/g, '<br/>')}</body></html>`
+    )))}`;
+    try { await navigator.clipboard.writeText(url); } catch { fallbackCopy(url); }
+    setCopiedLink(true);
+    setTimeout(() => setCopiedLink(false), 2000);
   };
 
-  // Parse sections
-  const sections = useMemo(() => {
-    if (!proposal?.content) return [];
-    const lines = proposal.content.split('\n');
-    const result = [];
-    let current = null;
+  const handleSectionEdit = (sectionIndex, newContent) => {
+    if (!onUpdateContent) return;
+    const updatedSections = [...sections];
+    updatedSections[sectionIndex] = { ...updatedSections[sectionIndex], content: newContent };
+    const newFullContent = updatedSections.map(s =>
+      s.title ? `## ${s.title}\n${s.content}` : s.content
+    ).join('\n');
+    onUpdateContent(newFullContent, 'Section edited');
+  };
 
-    for (const line of lines) {
-      if (line.match(/^#{1,3}\s/)) {
-        if (current) result.push(current);
-        current = { title: line.replace(/^#{1,3}\s/, ''), content: '' };
-      } else if (current) {
-        current.content += line + '\n';
-      } else {
-        current = { title: '', content: line + '\n' };
-      }
-    }
-    if (current) result.push(current);
-    return result;
-  }, [proposal?.content]);
+  // ── Preview Mode ────────────────────────────────────────────────────
+  if (previewMode) {
+    return (
+      <div className="space-y-4">
+        <div className="flex items-center justify-between">
+          <div className="flex items-center gap-3">
+            <button
+              onClick={() => setPreviewMode(false)}
+              className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+            >
+              <ArrowLeft size={14} />
+              Exit Preview
+            </button>
+            <span className="text-[#10B981] text-xs font-medium">Client-facing preview</span>
+          </div>
+          <button
+            onClick={handlePrint}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+          >
+            <Printer size={14} />
+            Print / PDF
+          </button>
+        </div>
 
+        {/* Clean white preview */}
+        <div className="bg-white rounded-xl shadow-2xl overflow-hidden">
+          <div className="p-8 md:p-12 max-w-[700px] mx-auto">
+            <h1 className="text-3xl font-bold text-[#111] mb-2">{proposal.title || 'Proposal'}</h1>
+            <div className="text-gray-500 text-sm mb-8 pb-6 border-b border-gray-200 space-y-1">
+              <p>Prepared for: <strong className="text-gray-700">{proposal.clientName || proposal.brief?.clientName}</strong></p>
+              <p>{new Date().toLocaleDateString('en-GB', { day: 'numeric', month: 'long', year: 'numeric' })}</p>
+              <p>Prepared by: Bear Witness</p>
+            </div>
+            {sections.map((section, i) => (
+              <SectionCard
+                key={i}
+                title={section.title}
+                content={section.content}
+                icon={section.icon}
+                isPreview
+                sectionIndex={i}
+              />
+            ))}
+          </div>
+        </div>
+      </div>
+    );
+  }
+
+  // ── Normal Display Mode ─────────────────────────────────────────────
   return (
     <div className="space-y-4">
       <div className="flex items-center justify-between flex-wrap gap-3">
         <div>
-          <h2 className="text-lg font-semibold text-[rgba(255,255,255,0.9)]">
-            {isSavedView ? proposal.title : 'Proposal Preview'}
-          </h2>
+          <div className="flex items-center gap-3">
+            <h2 className="text-lg font-semibold text-[rgba(255,255,255,0.9)]">
+              {isSavedView ? proposal.title : 'Proposal Preview'}
+            </h2>
+            {proposal.status && isSavedView && onStatusChange ? (
+              <StatusSelector currentStatus={proposal.status} onStatusChange={onStatusChange} />
+            ) : proposal.status ? (
+              <StatusBadge status={proposal.status} />
+            ) : null}
+          </div>
           <p className="text-[#6B7280] text-sm mt-0.5">
             {proposal.clientName || proposal.brief?.clientName}
             {proposal.createdAt && ` - ${formatDate(proposal.createdAt)}`}
           </p>
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex items-center gap-2 flex-wrap">
+          {/* Preview toggle */}
           <button
-            onClick={handleCopy}
+            onClick={() => setPreviewMode(true)}
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:border-[#3A3A4A] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+            title="Client-facing preview"
           >
-            {copied ? <Check size={14} className="text-[#10B981]" /> : <Copy size={14} />}
-            {copied ? 'Copied' : 'Copy'}
+            <Eye size={14} />
+            Preview
           </button>
+          {/* Copy as Markdown */}
           <button
-            onClick={handleCopyStructured}
+            onClick={handleCopyMarkdown}
             className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:border-[#3A3A4A] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+            title="Copy as formatted markdown"
           >
-            {copiedStructured ? <Check size={14} className="text-[#10B981]" /> : <Download size={14} />}
-            {copiedStructured ? 'Copied' : 'Structured Data'}
+            {copiedMd ? <Check size={14} className="text-[#10B981]" /> : <Copy size={14} />}
+            {copiedMd ? 'Copied' : 'Markdown'}
+          </button>
+          {/* Copy as HTML */}
+          <button
+            onClick={handleCopyHTML}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:border-[#3A3A4A] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+            title="Copy as HTML for email"
+          >
+            {copiedHtml ? <Check size={14} className="text-[#10B981]" /> : <Code size={14} />}
+            {copiedHtml ? 'Copied' : 'HTML'}
+          </button>
+          {/* Print */}
+          <button
+            onClick={handlePrint}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:border-[#3A3A4A] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+            title="Print-friendly view"
+          >
+            <Printer size={14} />
+            Print
+          </button>
+          {/* Share Link */}
+          <button
+            onClick={handleShareLink}
+            className="flex items-center gap-1.5 px-3 py-2 text-sm rounded-lg border border-[#2A2A3A] text-[#9CA3AF] hover:border-[#3A3A4A] hover:text-[rgba(255,255,255,0.9)] transition-colors"
+            title="Copy shareable link"
+          >
+            {copiedLink ? <Check size={14} className="text-[#10B981]" /> : <Share2 size={14} />}
+            {copiedLink ? 'Copied' : 'Share'}
           </button>
           {onSave && (
             <button
@@ -472,58 +945,69 @@ function ProposalDisplay({ proposal, onSave, onCopy, onCopyStructured, isSavedVi
         </div>
       </div>
 
-      {/* Analysis (collapsible) */}
-      {proposal.analysis && (
-        <ExpandableSection title="Business Analysis" defaultExpanded={false}>
-          <div className="text-[#9CA3AF] text-sm whitespace-pre-wrap leading-relaxed">{proposal.analysis}</div>
-        </ExpandableSection>
+      {/* Version History */}
+      {proposal.versions && proposal.versions.length > 1 && (
+        <VersionHistory
+          versions={proposal.versions}
+          onRestore={onUpdateContent ? (v) => onUpdateContent(v.content, 'Restored from version') : null}
+        />
       )}
 
-      {/* Proposal content */}
+      {/* Analysis (collapsible) */}
+      {proposal.analysis && (
+        <div className="bg-[#12121A] border border-[#2A2A3A] rounded-lg overflow-hidden">
+          <ExpandableHeader title="Business Analysis" defaultExpanded={false}>
+            <div className="text-[#9CA3AF]">{renderMarkdownContent(proposal.analysis)}</div>
+          </ExpandableHeader>
+        </div>
+      )}
+
+      {/* Proposal content - section cards */}
       {sections.length > 1 ? (
-        <div className="space-y-2">
+        <div className="space-y-3">
           {sections.map((section, i) => (
-            <ExpandableSection key={i} title={section.title} defaultExpanded>
-              <div className="text-[#9CA3AF] text-sm whitespace-pre-wrap leading-relaxed">{section.content}</div>
-            </ExpandableSection>
+            <SectionCard
+              key={i}
+              title={section.title}
+              content={section.content}
+              icon={section.icon}
+              isPreview={false}
+              onEdit={onUpdateContent ? handleSectionEdit : null}
+              sectionIndex={i}
+            />
           ))}
         </div>
       ) : (
         <div className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg p-5">
-          <div className="text-[#9CA3AF] text-sm whitespace-pre-wrap leading-relaxed">{proposal.content}</div>
+          <div className="text-[#9CA3AF]">{renderMarkdownContent(proposal.content)}</div>
         </div>
       )}
     </div>
   );
 }
 
-function ExpandableSection({ title, children, defaultExpanded = true }) {
+// ── Expandable Header helper ──────────────────────────────────────────
+function ExpandableHeader({ title, children, defaultExpanded = true }) {
   const [expanded, setExpanded] = useState(defaultExpanded);
 
-  if (!title && !children) return null;
-
   return (
-    <div className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg overflow-hidden">
-      {title && (
-        <button
-          onClick={() => setExpanded(!expanded)}
-          className="w-full flex items-center justify-between px-5 py-3 hover:bg-[#222233]/50 transition-colors text-left"
-        >
-          <h3 className="text-[rgba(255,255,255,0.9)] font-semibold text-sm">{title}</h3>
-          {expanded ? <ChevronUp size={16} className="text-[#6B7280] shrink-0" /> : <ChevronDown size={16} className="text-[#6B7280] shrink-0" />}
-        </button>
-      )}
+    <>
+      <button
+        onClick={() => setExpanded(!expanded)}
+        className="w-full flex items-center justify-between px-5 py-3 hover:bg-[#1A1A26] transition-colors text-left"
+      >
+        <h3 className="text-[rgba(255,255,255,0.9)] font-semibold text-sm">{title}</h3>
+        {expanded ? <ChevronUp size={16} className="text-[#6B7280] shrink-0" /> : <ChevronDown size={16} className="text-[#6B7280] shrink-0" />}
+      </button>
       {expanded && (
-        <div className={classNames('px-5 pb-4', title && 'pt-0')}>
-          {children}
-        </div>
+        <div className="px-5 pb-4 pt-0">{children}</div>
       )}
-    </div>
+    </>
   );
 }
 
 // ── Saved Proposals List ───────────────────────────────────────────────
-function SavedProposalsList({ proposals, clients, onView, onDelete, searchQuery, clientFilter }) {
+function SavedProposalsList({ proposals, clients, onView, onDelete, searchQuery, clientFilter, statusFilter }) {
   const clientMap = useMemo(() => {
     const m = {};
     clients.forEach(c => { m[c.id] = c; });
@@ -533,6 +1017,7 @@ function SavedProposalsList({ proposals, clients, onView, onDelete, searchQuery,
   const filtered = useMemo(() => {
     let results = [...proposals];
     if (clientFilter) results = results.filter(p => p.clientId === clientFilter);
+    if (statusFilter) results = results.filter(p => p.status === statusFilter);
     if (searchQuery) {
       const q = searchQuery.toLowerCase();
       results = results.filter(p =>
@@ -543,7 +1028,7 @@ function SavedProposalsList({ proposals, clients, onView, onDelete, searchQuery,
       );
     }
     return results.sort((a, b) => new Date(b.createdAt) - new Date(a.createdAt));
-  }, [proposals, searchQuery, clientFilter, clientMap]);
+  }, [proposals, searchQuery, clientFilter, statusFilter, clientMap]);
 
   if (filtered.length === 0) {
     return (
@@ -578,21 +1063,16 @@ function SavedProposalsList({ proposals, clients, onView, onDelete, searchQuery,
                   </div>
                 )}
                 <h3 className="text-[rgba(255,255,255,0.9)] font-medium text-sm truncate">{p.title}</h3>
-                {p.status && (
-                  <span className={classNames(
-                    'px-2 py-0.5 text-xs rounded-md shrink-0',
-                    p.status === 'Draft' && 'bg-[#F59E0B]/15 text-[#F59E0B]',
-                    p.status === 'Sent' && 'bg-[#3B82F6]/15 text-[#3B82F6]',
-                    p.status === 'Accepted' && 'bg-[#10B981]/15 text-[#10B981]',
-                    p.status === 'Declined' && 'bg-[#EF4444]/15 text-[#EF4444]',
-                  )}>
-                    {p.status}
-                  </span>
-                )}
+                {p.status && <StatusBadge status={p.status} />}
               </div>
               <div className="flex items-center gap-3 mt-1">
                 <span className="text-[#6B7280] text-xs">{p.clientName || client?.name || 'Unknown'}</span>
                 <span className="text-[#6B7280] text-xs">{formatDate(p.createdAt)}</span>
+                {p.versions && p.versions.length > 1 && (
+                  <span className="text-[#6B7280] text-xs flex items-center gap-1">
+                    <History size={10} /> {p.versions.length} versions
+                  </span>
+                )}
               </div>
             </div>
             <div className="flex items-center gap-1 shrink-0 ml-3">
@@ -640,20 +1120,33 @@ export default function ProposalBuilder({ onNavigate, params } = {}) {
   });
   const [analysis, setAnalysis] = useState('');
   const [proposalContent, setProposalContent] = useState('');
+  const [proposalVersions, setProposalVersions] = useState([]);
   const [loading, setLoading] = useState(false);
   const [generationPhase, setGenerationPhase] = useState('');
+  const [elapsed, setElapsed] = useState(0);
   const [viewingProposal, setViewingProposal] = useState(null);
   const [searchQuery, setSearchQuery] = useState('');
   const [clientFilter, setClientFilter] = useState('');
+  const [statusFilter, setStatusFilter] = useState('');
+
+  const timerRef = useRef(null);
+
+  useEffect(() => {
+    if (loading) {
+      setElapsed(0);
+      timerRef.current = setInterval(() => setElapsed(prev => prev + 1), 1000);
+    } else if (timerRef.current) {
+      clearInterval(timerRef.current);
+      timerRef.current = null;
+    }
+    return () => { if (timerRef.current) clearInterval(timerRef.current); };
+  }, [loading]);
 
   // Handle params
   useEffect(() => {
     if (params?.action === 'add') {
       setView('builder');
       resetBuilder();
-      if (params?.fromStrategy) {
-        // Strategy data will be in sessionStorage, handled by SourceSelector
-      }
     } else if (params?.proposalId) {
       const p = proposals.find(x => x.id === params.proposalId);
       if (p) { setViewingProposal(p); setView('view'); }
@@ -679,8 +1172,10 @@ export default function ProposalBuilder({ onNavigate, params } = {}) {
     });
     setAnalysis('');
     setProposalContent('');
+    setProposalVersions([]);
     setLoading(false);
     setGenerationPhase('');
+    setElapsed(0);
   };
 
   const handleSourceSelect = (source) => {
@@ -733,7 +1228,6 @@ export default function ProposalBuilder({ onNavigate, params } = {}) {
     setLoading(true);
 
     try {
-      // Build context
       let context = `Client: ${brief.clientName}\n`;
       if (clientContext) {
         context += `Sector: ${clientContext.sector || 'N/A'}\n`;
@@ -757,7 +1251,7 @@ Key Proof Points: ${brief.proofPoints || 'None provided'}
 Likely Objections: ${brief.objections || 'None identified'}
 Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@bearwitness.world'})`;
 
-      // ── Call 1: Business Analysis ──────────────────────────────────
+      // Call 1: Business Analysis
       setGenerationPhase('Analysing business opportunity...');
       const analysisResponse = await callAI({
         system: ANALYSIS_SYSTEM,
@@ -766,7 +1260,7 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
       });
       setAnalysis(analysisResponse);
 
-      // ── Call 2: Proposal Content ──────────────────────────────────
+      // Call 2: Proposal Content
       setGenerationPhase('Writing proposal...');
       const toneGuidance = {
         Partnership: 'Frame this as a strategic partnership. We are collaborators, not vendors.',
@@ -777,10 +1271,15 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
 
       const proposalResponse = await callAI({
         system: PROPOSAL_SYSTEM,
-        user: `Business Analysis:\n${analysisResponse}\n\n--- Proposal Brief ---\n${briefText}\n\n${context}\n\nTone guidance: ${toneGuidance[brief.tone] || toneGuidance.Partnership}\n\nWrite the complete proposal now.`,
+        user: `Business Analysis:\n${analysisResponse}\n\n--- Proposal Brief ---\n${briefText}\n\n${context}\n\nTone guidance: ${toneGuidance[brief.tone] || toneGuidance.Partnership}\n\nWrite the complete proposal now. Use ## headings for each major section.`,
         maxTokens: 4096,
       });
       setProposalContent(proposalResponse);
+      setProposalVersions([{
+        content: proposalResponse,
+        timestamp: new Date().toISOString(),
+        reason: 'AI generated',
+      }]);
       setBuilderStep('preview');
     } catch (err) {
       setProposalContent(`Error generating proposal: ${err.message}`);
@@ -789,6 +1288,15 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
       setLoading(false);
       setGenerationPhase('');
     }
+  };
+
+  const handleUpdateBuilderContent = (newContent, reason = 'Manual edit') => {
+    setProposalContent(newContent);
+    setProposalVersions(prev => [{
+      content: newContent,
+      timestamp: new Date().toISOString(),
+      reason,
+    }, ...prev]);
   };
 
   const handleSaveProposal = () => {
@@ -802,6 +1310,7 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
       brief: { ...brief },
       strategyContext: strategyContext ? truncate(strategyContext, 500) : '',
       status: 'Draft',
+      versions: proposalVersions,
       createdAt: new Date().toISOString(),
     };
     store.addProposal(data);
@@ -830,6 +1339,42 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
     }
   };
 
+  const handleUpdateSavedContent = (newContent, reason = 'Manual edit') => {
+    if (!viewingProposal) return;
+    const existingVersions = viewingProposal.versions || [{
+      content: viewingProposal.content,
+      timestamp: viewingProposal.createdAt || new Date().toISOString(),
+      reason: 'Original',
+    }];
+    const newVersions = [{
+      content: newContent,
+      timestamp: new Date().toISOString(),
+      reason,
+    }, ...existingVersions];
+
+    store.updateProposal(viewingProposal.id, {
+      content: newContent,
+      versions: newVersions,
+    });
+
+    setViewingProposal(prev => ({
+      ...prev,
+      content: newContent,
+      versions: newVersions,
+    }));
+  };
+
+  const handleStatusChange = (newStatus) => {
+    if (!viewingProposal) return;
+    store.updateProposal(viewingProposal.id, { status: newStatus });
+    setViewingProposal(prev => ({ ...prev, status: newStatus }));
+    store.addActivity({
+      type: 'proposal_status_changed',
+      message: `Proposal "${viewingProposal.title}" status changed to ${newStatus}`,
+      clientId: viewingProposal.clientId,
+    });
+  };
+
   // ── View: Saved Proposal ──────────────────────────────────────────────
   if (view === 'view' && viewingProposal) {
     return (
@@ -841,17 +1386,6 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
           <div className="flex-1 min-w-0">
             <div className="flex items-center gap-2">
               <h1 className="text-xl font-bold text-[rgba(255,255,255,0.9)]">{viewingProposal.title}</h1>
-              {viewingProposal.status && (
-                <span className={classNames(
-                  'px-2 py-0.5 text-xs rounded-md shrink-0',
-                  viewingProposal.status === 'Draft' && 'bg-[#F59E0B]/15 text-[#F59E0B]',
-                  viewingProposal.status === 'Sent' && 'bg-[#3B82F6]/15 text-[#3B82F6]',
-                  viewingProposal.status === 'Accepted' && 'bg-[#10B981]/15 text-[#10B981]',
-                  viewingProposal.status === 'Declined' && 'bg-[#EF4444]/15 text-[#EF4444]',
-                )}>
-                  {viewingProposal.status}
-                </span>
-              )}
             </div>
             <p className="text-[#6B7280] text-xs mt-0.5">
               {viewingProposal.clientName} - {formatDate(viewingProposal.createdAt)}
@@ -861,6 +1395,8 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
         <ProposalDisplay
           proposal={viewingProposal}
           isSavedView
+          onUpdateContent={handleUpdateSavedContent}
+          onStatusChange={handleStatusChange}
         />
       </div>
     );
@@ -917,19 +1453,38 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
 
         {loading && (
           <div className="bg-[#1A1A26] border border-[#2A2A3A] rounded-lg p-6 space-y-4">
-            <div className="flex items-center gap-2">
-              <Sparkles size={16} className="text-[#10B981] animate-pulse" />
-              <span className="text-[#9CA3AF] text-sm">{generationPhase}</span>
-            </div>
-            <LoadingSkeleton lines={10} />
-            {analysis && (
-              <div className="mt-4 pt-4 border-t border-[#2A2A3A]">
-                <span className="text-[#10B981] text-xs flex items-center gap-1 mb-2">
-                  <Check size={12} /> Business analysis complete
-                </span>
-                <span className="text-[#6B7280] text-xs">Now writing the proposal...</span>
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-2">
+                <Sparkles size={16} className="text-[#10B981] animate-pulse" />
+                <span className="text-[rgba(255,255,255,0.9)] text-sm font-medium">{generationPhase}</span>
               </div>
-            )}
+              <span className="text-[#6B7280] text-xs font-mono">{elapsed}s</span>
+            </div>
+            <p className="text-[#6B7280] text-xs">This typically takes 30-60 seconds. Two AI passes: business analysis then proposal writing.</p>
+
+            <ProposalLoadingSkeleton phase={analysis ? 'proposal' : 'analysis'} />
+
+            {/* Progress steps */}
+            <div className="pt-3 border-t border-[#2A2A3A] space-y-2">
+              <div className="flex items-center gap-2 text-xs">
+                {analysis ? (
+                  <Check size={12} className="text-[#10B981]" />
+                ) : (
+                  <div className="w-3 h-3 rounded-full border border-[#10B981] border-t-transparent animate-spin" />
+                )}
+                <span className={analysis ? 'text-[#10B981]' : 'text-[#9CA3AF]'}>Business analysis</span>
+              </div>
+              <div className="flex items-center gap-2 text-xs">
+                {proposalContent && !loading ? (
+                  <Check size={12} className="text-[#10B981]" />
+                ) : analysis ? (
+                  <div className="w-3 h-3 rounded-full border border-[#10B981] border-t-transparent animate-spin" />
+                ) : (
+                  <div className="w-3 h-3 rounded-full border border-[#2A2A3A]" />
+                )}
+                <span className={analysis ? 'text-[#9CA3AF]' : 'text-[#6B7280]'}>Proposal writing</span>
+              </div>
+            </div>
           </div>
         )}
 
@@ -941,8 +1496,10 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
               content: proposalContent,
               analysis,
               brief,
+              versions: proposalVersions,
             }}
             onSave={handleSaveProposal}
+            onUpdateContent={handleUpdateBuilderContent}
           />
         )}
       </div>
@@ -950,6 +1507,16 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
   }
 
   // ── View: List ─────────────────────────────────────────────────────────
+  // Count by status for overview
+  const statusCounts = useMemo(() => {
+    const counts = {};
+    PROPOSAL_STATUSES.forEach(s => { counts[s.key] = 0; });
+    proposals.forEach(p => {
+      if (counts[p.status] !== undefined) counts[p.status]++;
+    });
+    return counts;
+  }, [proposals]);
+
   return (
     <div className="p-6 max-w-5xl mx-auto space-y-5">
       <div className="flex items-center justify-between">
@@ -965,6 +1532,48 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
           New Proposal
         </button>
       </div>
+
+      {/* Status overview */}
+      {proposals.length > 0 && (
+        <div className="flex items-center gap-2 flex-wrap">
+          {PROPOSAL_STATUSES.map(s => {
+            const count = statusCounts[s.key] || 0;
+            if (count === 0 && !statusFilter) return null;
+            const isActive = statusFilter === s.key;
+            return (
+              <button
+                key={s.key}
+                onClick={() => setStatusFilter(isActive ? '' : s.key)}
+                className={classNames(
+                  'flex items-center gap-1.5 px-3 py-1.5 rounded-lg text-xs font-medium transition-colors border',
+                  isActive
+                    ? 'border-current'
+                    : 'border-[#2A2A3A] hover:border-[#3A3A4A]'
+                )}
+                style={{ color: isActive ? s.color : '#6B7280' }}
+              >
+                {s.label}
+                <span className={classNames(
+                  'px-1.5 py-0.5 rounded text-[10px]',
+                  isActive ? 'bg-current/10' : 'bg-[#222233]'
+                )}
+                  style={isActive ? { backgroundColor: `${s.color}15` } : {}}
+                >
+                  {count}
+                </span>
+              </button>
+            );
+          })}
+          {statusFilter && (
+            <button
+              onClick={() => setStatusFilter('')}
+              className="text-[#6B7280] hover:text-[#9CA3AF] text-xs flex items-center gap-1"
+            >
+              <X size={12} /> Clear filter
+            </button>
+          )}
+        </div>
+      )}
 
       {/* Search and Filter */}
       {proposals.length > 0 && (
@@ -997,6 +1606,7 @@ Contact: ${brief.contactName || 'Bear Witness'} (${brief.contactEmail || 'hello@
         onDelete={handleDeleteProposal}
         searchQuery={searchQuery}
         clientFilter={clientFilter}
+        statusFilter={statusFilter}
       />
     </div>
   );
