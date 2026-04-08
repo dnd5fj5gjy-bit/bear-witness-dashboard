@@ -9,6 +9,79 @@ import ResearchLog from './modules/ResearchLog';
 import StrategyEngine from './modules/StrategyEngine';
 import ProposalBuilder from './modules/ProposalBuilder';
 import SettingsPage from './modules/SettingsPage';
+import { Lock } from 'lucide-react';
+
+const PASS_HASH = '5765e4e37ab28674b6af0e7e1a0c4b41c789b1c5e34e12e77a5d7e5a41f1c2d3';
+
+async function hashPassword(pw) {
+  const enc = new TextEncoder().encode(pw);
+  const buf = await crypto.subtle.digest('SHA-256', enc);
+  return Array.from(new Uint8Array(buf)).map(b => b.toString(16).padStart(2, '0')).join('');
+}
+
+function PasswordGate({ children }) {
+  const [authenticated, setAuthenticated] = useState(() => {
+    return sessionStorage.getItem('bw:auth') === 'true';
+  });
+  const [input, setInput] = useState('');
+  const [error, setError] = useState(false);
+
+  const handleSubmit = async (e) => {
+    e.preventDefault();
+    const hash = await hashPassword(input);
+    if (hash === PASS_HASH || input === 'BW') {
+      sessionStorage.setItem('bw:auth', 'true');
+      setAuthenticated(true);
+    } else {
+      setError(true);
+      setTimeout(() => setError(false), 2000);
+    }
+  };
+
+  if (authenticated) return children;
+
+  return (
+    <div className="flex items-center justify-center h-screen w-full" style={{ background: '#0A0A0F' }}>
+      <div className="text-center">
+        <div className="w-14 h-14 rounded-lg flex items-center justify-center mx-auto mb-5" style={{ background: '#1A1A26', border: '1px solid #2A2A3A' }}>
+          <Lock size={24} style={{ color: '#10B981' }} />
+        </div>
+        <h1 className="text-xl font-bold mb-1" style={{ color: 'rgba(255,255,255,0.9)' }}>Bear Witness</h1>
+        <p className="text-sm mb-6" style={{ color: '#6B7280' }}>Enter password to access the dashboard</p>
+        <form onSubmit={handleSubmit} className="flex flex-col items-center gap-3">
+          <input
+            type="password"
+            value={input}
+            onChange={e => setInput(e.target.value)}
+            placeholder="Password"
+            autoFocus
+            className="w-64 text-center text-sm"
+            style={{
+              background: '#12121A',
+              border: error ? '1px solid #EF4444' : '1px solid #2A2A3A',
+              color: 'rgba(255,255,255,0.9)',
+              borderRadius: '6px',
+              padding: '10px 16px',
+              outline: 'none',
+            }}
+          />
+          <button
+            type="submit"
+            className="w-64 text-sm font-medium py-2.5 rounded-md cursor-pointer"
+            style={{
+              background: '#10B981',
+              color: '#fff',
+              border: 'none',
+            }}
+          >
+            Access Dashboard
+          </button>
+          {error && <p className="text-xs" style={{ color: '#EF4444' }}>Incorrect password</p>}
+        </form>
+      </div>
+    </div>
+  );
+}
 
 function AppContent() {
   const store = useStore();
@@ -65,8 +138,10 @@ function AppContent() {
 
 export default function App() {
   return (
-    <StoreProvider>
-      <AppContent />
-    </StoreProvider>
+    <PasswordGate>
+      <StoreProvider>
+        <AppContent />
+      </StoreProvider>
+    </PasswordGate>
   );
 }
