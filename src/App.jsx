@@ -5,6 +5,7 @@ import CommandCentre from './modules/CommandCentre';
 import ClientHub from './modules/ClientHub';
 import CampaignCommand from './modules/CampaignCommand';
 import ContentCalendar from './modules/ContentCalendar';
+import ContentForge from './modules/ContentForge';
 import ResearchLog from './modules/ResearchLog';
 import StrategyEngine from './modules/StrategyEngine';
 import ProposalBuilder from './modules/ProposalBuilder';
@@ -116,6 +117,8 @@ function AppContent() {
         return <CampaignCommand onNavigate={handleNavigate} params={moduleParams} />;
       case 'content-calendar':
         return <ContentCalendar onNavigate={handleNavigate} params={moduleParams} />;
+      case 'content-forge':
+        return <ContentForge onNavigate={handleNavigate} params={moduleParams} />;
       case 'research-log':
         return <ResearchLog onNavigate={handleNavigate} params={moduleParams} />;
       case 'strategy-engine':

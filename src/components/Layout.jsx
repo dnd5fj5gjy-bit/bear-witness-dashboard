@@ -1,7 +1,7 @@
 import { useState, useEffect, useRef, createContext, useContext, useCallback } from 'react';
 import { useStore } from '../hooks/useStore';
 import {
-  LayoutDashboard, Users, Megaphone, Calendar, BookOpen,
+  LayoutDashboard, Users, Megaphone, Calendar, Flame, BookOpen,
   Brain, FileText, Settings, Search, ChevronLeft, ChevronRight,
   X, Bell, Command, UserPlus, CalendarClock, NotebookPen,
   CheckCircle, AlertCircle, Info, AlertTriangle,
@@ -15,6 +15,7 @@ const NAV_ITEMS = [
   { key: 'client-hub', label: 'Client Hub', icon: Users },
   { key: 'campaigns', label: 'Campaigns', icon: Megaphone },
   { key: 'content-calendar', label: 'Content Calendar', icon: Calendar },
+  { key: 'content-forge', label: 'Content Forge', icon: Flame },
   { key: 'research-log', label: 'Research Log', icon: BookOpen },
   { key: 'strategy-engine', label: 'Strategy Engine', icon: Brain },
   { key: 'proposal-builder', label: 'Proposal Builder', icon: FileText },
