@@ -35,12 +35,19 @@ const app = express();
 
 // CORS — allow the frontend origin
 app.use(cors({
-  origin: [
-    FRONTEND_URL,
-    'http://localhost:5173',
-    'http://localhost:5174',
-    'http://localhost:4173',
-  ],
+  origin: function (origin, callback) {
+    // Allow requests from GitHub Pages, localhost, trycloudflare tunnels, and no-origin (server-to-server)
+    if (!origin) return callback(null, true);
+    if (
+      origin.includes('github.io') ||
+      origin.includes('localhost') ||
+      origin.includes('trycloudflare.com') ||
+      origin === FRONTEND_URL
+    ) {
+      return callback(null, true);
+    }
+    callback(null, true); // Allow all for now — API key protects the data
+  },
   credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],

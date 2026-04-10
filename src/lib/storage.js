@@ -1,8 +1,8 @@
 // Storage abstraction layer - uses localStorage with JSON serialization
 const STORAGE_PREFIX = 'bw2:';
-const STORAGE_VERSION = '2';
+const STORAGE_VERSION = '3';
 
-// Auto-clear old data on first load of new version
+// Auto-clear old data and pre-configure server on first load of new version
 (function migrateClearOldData() {
   const vKey = 'bw2:_version';
   const current = localStorage.getItem(vKey);
@@ -16,6 +16,9 @@ const STORAGE_VERSION = '2';
       }
     }
     toRemove.forEach(k => localStorage.removeItem(k));
+    // Pre-configure server connection
+    localStorage.setItem('bw2:serverUrl', 'https://hurricane-invest-authentication-miracle.trycloudflare.com');
+    localStorage.setItem('bw2:serverApiKey', 'bw-api-2026-ted');
     localStorage.setItem(vKey, STORAGE_VERSION);
   }
 })();
