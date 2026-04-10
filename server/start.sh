@@ -19,5 +19,5 @@ if [ ! -x "$NODE" ]; then
   NODE="$(which node)"
 fi
 
-echo "[$(date -Iseconds)] Starting Bear Witness Dashboard server..."
+echo "[$(date -Iseconds)] Starting Bear Witness Dashboard server on port ${PORT:-5182}..."
 exec "$NODE" src/index.js

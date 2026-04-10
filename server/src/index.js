@@ -5,16 +5,26 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { initDatabase } from './db.js';
+import { initDashboardTables } from './dashboardDb.js';
 import { apiKeyAuth } from './middleware/auth.js';
 import authRoutes from './routes/auth.js';
 import accountsRoutes from './routes/accounts.js';
 import postsRoutes from './routes/posts.js';
 import scheduleRoutes from './routes/schedule.js';
+import dashClientsRoutes from './routes/dashClients.js';
+import dashCampaignsRoutes from './routes/dashCampaigns.js';
+import dashPostsRoutes from './routes/dashPosts.js';
+import dashResearchRoutes from './routes/dashResearch.js';
+import dashStrategiesRoutes from './routes/dashStrategies.js';
+import dashProposalsRoutes from './routes/dashProposals.js';
+import dashActivityRoutes from './routes/dashActivity.js';
+import dashSettingsRoutes from './routes/dashSettings.js';
 import { startScheduler } from './services/scheduler.js';
 import { startTokenRefreshJob } from './services/tokenRefresh.js';
+import { startBackupJob } from './backup.js';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
-const PORT = parseInt(process.env.PORT || '5181', 10);
+const PORT = parseInt(process.env.PORT || '5182', 10);
 const FRONTEND_URL = process.env.FRONTEND_URL || 'http://localhost:5173';
 
 const app = express();
@@ -36,8 +46,8 @@ app.use(cors({
   allowedHeaders: ['Content-Type', 'Authorization', 'X-API-Key'],
 }));
 
-// JSON body parser
-app.use(express.json({ limit: '10mb' }));
+// JSON body parser (50MB limit for large strategy/proposal content)
+app.use(express.json({ limit: '50mb' }));
 app.use(express.urlencoded({ extended: true }));
 
 // Serve uploaded files statically (needed for Instagram image_url publishing)
@@ -59,8 +69,15 @@ app.use((req, res, next) => {
 // Routes
 // ---------------------------------------------------------------------------
 
-// Health check (no auth needed)
+// Health check (no auth needed) — both /health and /api/health
 app.get('/health', (req, res) => {
+  res.json({
+    status: 'ok',
+    timestamp: new Date().toISOString(),
+    uptime: process.uptime(),
+  });
+});
+app.get('/api/health', (req, res) => {
   res.json({
     status: 'ok',
     timestamp: new Date().toISOString(),
@@ -75,6 +92,16 @@ app.use('/auth', authRoutes);
 app.use('/api/accounts', apiKeyAuth, accountsRoutes);
 app.use('/api/posts', apiKeyAuth, postsRoutes);
 app.use('/api/schedule', apiKeyAuth, scheduleRoutes);
+
+// Dashboard data routes (protected by API key)
+app.use('/api/clients', apiKeyAuth, dashClientsRoutes);
+app.use('/api/campaigns', apiKeyAuth, dashCampaignsRoutes);
+app.use('/api/content-posts', apiKeyAuth, dashPostsRoutes);
+app.use('/api/research', apiKeyAuth, dashResearchRoutes);
+app.use('/api/strategies', apiKeyAuth, dashStrategiesRoutes);
+app.use('/api/proposals', apiKeyAuth, dashProposalsRoutes);
+app.use('/api/activity', apiKeyAuth, dashActivityRoutes);
+app.use('/api/settings', apiKeyAuth, dashSettingsRoutes);
 
 // ---------------------------------------------------------------------------
 // Error handling
@@ -111,6 +138,7 @@ app.use((err, req, res, next) => {
 function start() {
   // Initialize database
   initDatabase();
+  initDashboardTables();
 
   // Start the server
   app.listen(PORT, () => {
@@ -122,6 +150,7 @@ function start() {
   // Start background jobs
   startScheduler();
   startTokenRefreshJob();
+  startBackupJob();
 }
 
 start();

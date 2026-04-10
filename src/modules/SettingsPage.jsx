@@ -5,7 +5,7 @@ import { classNames, generateId } from '../lib/utils';
 import {
   Settings, Users, Key, Palette, Database, Plus, X, Trash2, Check,
   Download, Upload, AlertTriangle, Shield, Eye, EyeOff, Monitor,
-  Globe, Mail, ChevronDown, ChevronUp
+  Globe, Mail, ChevronDown, ChevronUp, Server, Wifi, WifiOff, RefreshCw
 } from 'lucide-react';
 
 const ACCENT_COLOURS = [
@@ -14,6 +14,7 @@ const ACCENT_COLOURS = [
 ];
 
 const SECTIONS = [
+  { key: 'server', label: 'Server', icon: Server },
   { key: 'team', label: 'Team Settings', icon: Users },
   { key: 'api', label: 'API Configuration', icon: Key },
   { key: 'display', label: 'Display Settings', icon: Palette },
@@ -71,6 +72,204 @@ function SettingsSection({ title, icon: Icon, children, description }) {
         {children}
       </div>
     </div>
+  );
+}
+
+// ── Server Configuration ──────────────────────────────────────────────
+function ServerSettings({ store }) {
+  const [serverUrl, setServerUrl] = useState(() => localStorage.getItem('bw2:serverUrl') || '');
+  const [serverApiKey, setServerApiKey] = useState(() => localStorage.getItem('bw2:serverApiKey') || '');
+  const [showApiKey, setShowApiKey] = useState(false);
+  const [testStatus, setTestStatus] = useState(null); // null | 'testing' | 'connected' | 'error'
+  const [testError, setTestError] = useState('');
+  const [saved, setSaved] = useState(false);
+
+  const handleSave = () => {
+    const trimmedUrl = serverUrl.trim().replace(/\/+$/, '');
+    if (trimmedUrl) {
+      localStorage.setItem('bw2:serverUrl', trimmedUrl);
+    } else {
+      localStorage.removeItem('bw2:serverUrl');
+    }
+    if (serverApiKey.trim()) {
+      localStorage.setItem('bw2:serverApiKey', serverApiKey.trim());
+    } else {
+      localStorage.removeItem('bw2:serverApiKey');
+    }
+    setSaved(true);
+    setTimeout(() => setSaved(false), 2000);
+  };
+
+  const handleTest = async () => {
+    const trimmedUrl = serverUrl.trim().replace(/\/+$/, '');
+    if (!trimmedUrl) {
+      setTestStatus('error');
+      setTestError('No server URL configured');
+      return;
+    }
+
+    setTestStatus('testing');
+    setTestError('');
+
+    try {
+      const res = await fetch(`${trimmedUrl}/api/health`, {
+        method: 'GET',
+        headers: serverApiKey.trim() ? { 'X-API-Key': serverApiKey.trim() } : {},
+      });
+
+      if (!res.ok) {
+        throw new Error(`HTTP ${res.status}`);
+      }
+
+      const data = await res.json();
+      if (data.status === 'ok') {
+        setTestStatus('connected');
+      } else {
+        setTestStatus('error');
+        setTestError('Unexpected response from server');
+      }
+    } catch (err) {
+      setTestStatus('error');
+      setTestError(err.message || 'Connection failed');
+    }
+
+    setTimeout(() => {
+      if (testStatus !== 'error') setTestStatus(null);
+    }, 5000);
+  };
+
+  const handleSyncFromServer = async () => {
+    handleSave();
+    // Allow localStorage to update before refresh
+    setTimeout(async () => {
+      try {
+        await store.refreshFromServer();
+        setTestStatus('connected');
+      } catch (err) {
+        setTestStatus('error');
+        setTestError('Sync failed: ' + (err.message || 'Unknown error'));
+      }
+    }, 50);
+  };
+
+  const handleDisconnect = () => {
+    localStorage.removeItem('bw2:serverUrl');
+    localStorage.removeItem('bw2:serverApiKey');
+    setServerUrl('');
+    setServerApiKey('');
+    setTestStatus(null);
+    setTestError('');
+    // Reload to revert to localStorage mode
+    window.location.reload();
+  };
+
+  return (
+    <SettingsSection
+      title="Server Configuration"
+      icon={Server}
+      description="Connect to a backend server to share data across users and devices"
+    >
+      {/* Status indicator */}
+      <div className="flex items-center gap-2 mb-1">
+        {store.isServerMode ? (
+          <span className="flex items-center gap-1.5 text-[#10B981] text-xs font-medium">
+            <Wifi size={14} /> Connected to server
+          </span>
+        ) : (
+          <span className="flex items-center gap-1.5 text-[#9CA3AF] text-xs">
+            <WifiOff size={14} /> Local storage mode (offline)
+          </span>
+        )}
+      </div>
+
+      {/* Server URL */}
+      <div>
+        <label className="block text-[#9CA3AF] text-xs mb-1.5">Backend URL</label>
+        <input
+          type="text"
+          value={serverUrl}
+          onChange={e => setServerUrl(e.target.value)}
+          placeholder="http://100.107.76.20:5182"
+          className="w-full"
+        />
+        <p className="text-[#6B7280] text-xs mt-1">
+          The URL of your Bear Witness API server (e.g. http://your-server:5182)
+        </p>
+      </div>
+
+      {/* API Key */}
+      <div>
+        <label className="block text-[#9CA3AF] text-xs mb-1.5">Backend API Key</label>
+        <div className="relative">
+          <input
+            type={showApiKey ? 'text' : 'password'}
+            value={serverApiKey}
+            onChange={e => setServerApiKey(e.target.value)}
+            placeholder="bearwitness-api-key-..."
+            className="w-full pr-10"
+          />
+          <button
+            onClick={() => setShowApiKey(!showApiKey)}
+            className="absolute right-3 top-1/2 -translate-y-1/2 text-[#6B7280] hover:text-[#9CA3AF]"
+          >
+            {showApiKey ? <EyeOff size={14} /> : <Eye size={14} />}
+          </button>
+        </div>
+      </div>
+
+      {/* Actions */}
+      <div className="flex items-center gap-2 flex-wrap">
+        <button
+          onClick={() => { handleSave(); handleTest(); }}
+          disabled={testStatus === 'testing'}
+          className="flex items-center gap-1.5 px-3 py-2 bg-[#222233] border border-[#2A2A3A] text-[#9CA3AF] hover:text-[rgba(255,255,255,0.9)] hover:border-[#3A3A4A] text-sm rounded-lg transition-colors disabled:opacity-50"
+        >
+          {testStatus === 'testing' ? (
+            <RefreshCw size={14} className="animate-spin" />
+          ) : (
+            <Wifi size={14} />
+          )}
+          Test Connection
+        </button>
+
+        <button
+          onClick={handleSyncFromServer}
+          disabled={!serverUrl.trim()}
+          className="flex items-center gap-1.5 px-3 py-2 bg-[#10B981]/15 border border-[#10B981]/30 text-[#10B981] hover:bg-[#10B981]/25 text-sm rounded-lg transition-colors disabled:opacity-40"
+        >
+          <RefreshCw size={14} />
+          Save &amp; Sync
+        </button>
+
+        {store.isServerMode && (
+          <button
+            onClick={handleDisconnect}
+            className="flex items-center gap-1.5 px-3 py-2 bg-[#EF4444]/10 border border-[#EF4444]/20 text-[#EF4444] hover:bg-[#EF4444]/20 text-sm rounded-lg transition-colors"
+          >
+            <WifiOff size={14} />
+            Disconnect
+          </button>
+        )}
+
+        {saved && (
+          <span className="text-[#10B981] text-xs flex items-center gap-1">
+            <Check size={12} /> Saved
+          </span>
+        )}
+      </div>
+
+      {/* Test result */}
+      {testStatus === 'connected' && (
+        <p className="text-[#10B981] text-xs flex items-center gap-1">
+          <Check size={12} /> Server is reachable and responding
+        </p>
+      )}
+      {testStatus === 'error' && (
+        <p className="text-[#EF4444] text-xs flex items-center gap-1">
+          <AlertTriangle size={12} /> {testError || 'Connection failed'}
+        </p>
+      )}
+    </SettingsSection>
   );
 }
 
@@ -549,7 +748,7 @@ function DataManagement({ store }) {
 export default function SettingsPage({ onNavigate, params } = {}) {
   const store = useStore();
   const { settings = {} } = store;
-  const [activeSection, setActiveSection] = useState('team');
+  const [activeSection, setActiveSection] = useState('server');
   const [saved, setSaved] = useState(false);
 
   const handleUpdate = useCallback((updates) => {
@@ -597,6 +796,9 @@ export default function SettingsPage({ onNavigate, params } = {}) {
 
       {/* Content */}
       <div className="space-y-5">
+        {activeSection === 'server' && (
+          <ServerSettings store={store} />
+        )}
         {activeSection === 'team' && (
           <TeamSettings settings={settings} onUpdate={handleUpdate} />
         )}

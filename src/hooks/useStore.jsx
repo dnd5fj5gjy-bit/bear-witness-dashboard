@@ -23,6 +23,55 @@ const KEYS = {
   settings: 'settings:global',
 };
 
+// ---------------------------------------------------------------------------
+// Server-mode helpers
+// ---------------------------------------------------------------------------
+
+function getServerConfig() {
+  try {
+    const url = localStorage.getItem('bw2:serverUrl');
+    const key = localStorage.getItem('bw2:serverApiKey');
+    if (url && url.trim()) {
+      return { serverUrl: url.trim().replace(/\/+$/, ''), serverApiKey: key || '' };
+    }
+  } catch { /* ignore */ }
+  return null;
+}
+
+async function apiFetch(path, options = {}) {
+  const cfg = getServerConfig();
+  if (!cfg) throw new Error('Server not configured');
+
+  const headers = { 'Content-Type': 'application/json', ...(options.headers || {}) };
+  if (cfg.serverApiKey) {
+    headers['X-API-Key'] = cfg.serverApiKey;
+  }
+
+  const res = await fetch(`${cfg.serverUrl}${path}`, {
+    ...options,
+    headers,
+  });
+
+  if (!res.ok) {
+    const text = await res.text().catch(() => '');
+    throw new Error(`API ${res.status}: ${text}`);
+  }
+
+  return res.json();
+}
+
+// API endpoint mapping
+const API_PATHS = {
+  clients: '/api/clients',
+  campaigns: '/api/campaigns',
+  posts: '/api/content-posts',
+  research: '/api/research',
+  strategies: '/api/strategies',
+  proposals: '/api/proposals',
+  activityFeed: '/api/activity',
+  settings: '/api/settings',
+};
+
 export function StoreProvider({ children }) {
   const [clients, setClients] = useState([]);
   const [campaigns, setCampaigns] = useState([]);
@@ -33,7 +82,15 @@ export function StoreProvider({ children }) {
   const [activityFeed, setActivityFeed] = useState([]);
   const [settings, setSettings] = useState(sampleSettings);
   const [loaded, setLoaded] = useState(false);
+  const [isServerMode, setIsServerMode] = useState(false);
   const initializedRef = useRef(false);
+
+  // Check if server mode is available
+  const checkServerMode = useCallback(() => {
+    const cfg = getServerConfig();
+    setIsServerMode(!!cfg);
+    return !!cfg;
+  }, []);
 
   // Load data on mount
   useEffect(() => {
@@ -41,6 +98,50 @@ export function StoreProvider({ children }) {
     initializedRef.current = true;
 
     async function init() {
+      const cfg = getServerConfig();
+
+      if (cfg) {
+        // Try to load from server
+        try {
+          const [
+            serverClients,
+            serverCampaigns,
+            serverPosts,
+            serverResearch,
+            serverStrategies,
+            serverProposals,
+            serverActivity,
+            serverSettings,
+          ] = await Promise.all([
+            apiFetch(API_PATHS.clients),
+            apiFetch(API_PATHS.campaigns),
+            apiFetch(API_PATHS.posts),
+            apiFetch(API_PATHS.research),
+            apiFetch(API_PATHS.strategies),
+            apiFetch(API_PATHS.proposals),
+            apiFetch(API_PATHS.activityFeed),
+            apiFetch(API_PATHS.settings),
+          ]);
+
+          setClients(Array.isArray(serverClients) ? serverClients : []);
+          setCampaigns(Array.isArray(serverCampaigns) ? serverCampaigns : []);
+          setPosts(Array.isArray(serverPosts) ? serverPosts : []);
+          setResearch(Array.isArray(serverResearch) ? serverResearch : []);
+          setStrategies(Array.isArray(serverStrategies) ? serverStrategies : []);
+          setProposals(Array.isArray(serverProposals) ? serverProposals : []);
+          setActivityFeed(Array.isArray(serverActivity) ? serverActivity : []);
+          setSettings(serverSettings && typeof serverSettings === 'object' && Object.keys(serverSettings).length > 0
+            ? serverSettings
+            : sampleSettings);
+          setIsServerMode(true);
+          setLoaded(true);
+          return;
+        } catch (err) {
+          console.warn('Server mode failed, falling back to localStorage:', err.message);
+        }
+      }
+
+      // Fallback: localStorage
       const storedClients = await storage.get(KEYS.clients);
       const storedCampaigns = await storage.get(KEYS.campaigns);
       const storedPosts = await storage.get(KEYS.posts);
@@ -50,27 +151,35 @@ export function StoreProvider({ children }) {
       const storedActivity = await storage.get(KEYS.activityFeed);
       const storedSettings = await storage.get(KEYS.settings);
 
-      // Start clean — no sample data
-      {
-        setClients(storedClients || []);
-        setCampaigns(storedCampaigns || []);
-        setPosts(storedPosts || []);
-        setResearch(storedResearch || []);
-        setStrategies(storedStrategies || []);
-        setProposals(storedProposals || []);
-        setActivityFeed(storedActivity || []);
-        setSettings(storedSettings || sampleSettings);
-      }
-
+      setClients(storedClients || []);
+      setCampaigns(storedCampaigns || []);
+      setPosts(storedPosts || []);
+      setResearch(storedResearch || []);
+      setStrategies(storedStrategies || []);
+      setProposals(storedProposals || []);
+      setActivityFeed(storedActivity || []);
+      setSettings(storedSettings || sampleSettings);
+      setIsServerMode(false);
       setLoaded(true);
     }
 
     init();
   }, []);
 
-  // Persist helper
+  // Persist helper — writes to server or localStorage
   const persist = useCallback(async (key, data) => {
     await storage.set(key, data);
+  }, []);
+
+  // Fire-and-forget API call (for server mode). Does not block UI.
+  const apiCall = useCallback((path, method, body) => {
+    if (!getServerConfig()) return;
+    apiFetch(path, {
+      method,
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+    }).catch(err => {
+      console.warn(`API ${method} ${path} failed:`, err.message);
+    });
   }, []);
 
   // --- CLIENTS ---
@@ -81,16 +190,31 @@ export function StoreProvider({ children }) {
       persist(KEYS.clients, next);
       return next;
     });
+    apiCall(API_PATHS.clients, 'POST', client);
     return client;
-  }, [persist]);
+  }, [persist, apiCall]);
 
   const updateClient = useCallback((id, data) => {
+    let updated;
     setClients(prev => {
-      const next = prev.map(c => c.id === id ? { ...c, ...data, updatedAt: Date.now() } : c);
+      const next = prev.map(c => {
+        if (c.id === id) {
+          updated = { ...c, ...data, updatedAt: Date.now() };
+          return updated;
+        }
+        return c;
+      });
       persist(KEYS.clients, next);
       return next;
     });
-  }, [persist]);
+    // updated gets set synchronously in the map above
+    if (getServerConfig()) {
+      // Defer to next tick so `updated` is populated
+      setTimeout(() => {
+        if (updated) apiCall(`${API_PATHS.clients}/${id}`, 'PUT', data);
+      }, 0);
+    }
+  }, [persist, apiCall]);
 
   const deleteClient = useCallback((id) => {
     setClients(prev => {
@@ -98,7 +222,6 @@ export function StoreProvider({ children }) {
       persist(KEYS.clients, next);
       return next;
     });
-    // Also delete associated data
     setCampaigns(prev => {
       const next = prev.filter(c => c.clientId !== id);
       persist(KEYS.campaigns, next);
@@ -124,7 +247,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.proposals, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.clients}/${id}`, 'DELETE');
+  }, [persist, apiCall]);
 
   // --- CAMPAIGNS ---
   const addCampaign = useCallback((data) => {
@@ -134,8 +258,9 @@ export function StoreProvider({ children }) {
       persist(KEYS.campaigns, next);
       return next;
     });
+    apiCall(API_PATHS.campaigns, 'POST', campaign);
     return campaign;
-  }, [persist]);
+  }, [persist, apiCall]);
 
   const updateCampaign = useCallback((id, data) => {
     setCampaigns(prev => {
@@ -143,7 +268,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.campaigns, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.campaigns}/${id}`, 'PUT', data);
+  }, [persist, apiCall]);
 
   const deleteCampaign = useCallback((id) => {
     setCampaigns(prev => {
@@ -151,7 +277,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.campaigns, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.campaigns}/${id}`, 'DELETE');
+  }, [persist, apiCall]);
 
   // --- POSTS ---
   const addPost = useCallback((data) => {
@@ -161,8 +288,9 @@ export function StoreProvider({ children }) {
       persist(KEYS.posts, next);
       return next;
     });
+    apiCall(API_PATHS.posts, 'POST', post);
     return post;
-  }, [persist]);
+  }, [persist, apiCall]);
 
   const updatePost = useCallback((id, data) => {
     setPosts(prev => {
@@ -170,7 +298,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.posts, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.posts}/${id}`, 'PUT', data);
+  }, [persist, apiCall]);
 
   const deletePost = useCallback((id) => {
     setPosts(prev => {
@@ -178,7 +307,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.posts, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.posts}/${id}`, 'DELETE');
+  }, [persist, apiCall]);
 
   // --- RESEARCH ---
   const addResearch = useCallback((data) => {
@@ -188,8 +318,9 @@ export function StoreProvider({ children }) {
       persist(KEYS.research, next);
       return next;
     });
+    apiCall(API_PATHS.research, 'POST', note);
     return note;
-  }, [persist]);
+  }, [persist, apiCall]);
 
   const updateResearch = useCallback((id, data) => {
     setResearch(prev => {
@@ -197,7 +328,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.research, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.research}/${id}`, 'PUT', data);
+  }, [persist, apiCall]);
 
   const deleteResearch = useCallback((id) => {
     setResearch(prev => {
@@ -205,7 +337,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.research, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.research}/${id}`, 'DELETE');
+  }, [persist, apiCall]);
 
   // --- STRATEGIES ---
   const addStrategy = useCallback((data) => {
@@ -215,8 +348,9 @@ export function StoreProvider({ children }) {
       persist(KEYS.strategies, next);
       return next;
     });
+    apiCall(API_PATHS.strategies, 'POST', strategy);
     return strategy;
-  }, [persist]);
+  }, [persist, apiCall]);
 
   const updateStrategy = useCallback((id, data) => {
     setStrategies(prev => {
@@ -224,7 +358,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.strategies, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.strategies}/${id}`, 'PUT', data);
+  }, [persist, apiCall]);
 
   const deleteStrategy = useCallback((id) => {
     setStrategies(prev => {
@@ -232,7 +367,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.strategies, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.strategies}/${id}`, 'DELETE');
+  }, [persist, apiCall]);
 
   // --- PROPOSALS ---
   const addProposal = useCallback((data) => {
@@ -242,8 +378,9 @@ export function StoreProvider({ children }) {
       persist(KEYS.proposals, next);
       return next;
     });
+    apiCall(API_PATHS.proposals, 'POST', proposal);
     return proposal;
-  }, [persist]);
+  }, [persist, apiCall]);
 
   const updateProposal = useCallback((id, data) => {
     setProposals(prev => {
@@ -251,7 +388,8 @@ export function StoreProvider({ children }) {
       persist(KEYS.proposals, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.proposals}/${id}`, 'PUT', data);
+  }, [persist, apiCall]);
 
   const deleteProposal = useCallback((id) => {
     setProposals(prev => {
@@ -259,17 +397,19 @@ export function StoreProvider({ children }) {
       persist(KEYS.proposals, next);
       return next;
     });
-  }, [persist]);
+    apiCall(`${API_PATHS.proposals}/${id}`, 'DELETE');
+  }, [persist, apiCall]);
 
   // --- ACTIVITY FEED ---
   const addActivity = useCallback((entry) => {
     const activity = { ...entry, id: generateId(), timestamp: Date.now() };
     setActivityFeed(prev => {
-      const next = [activity, ...prev].slice(0, 100); // Keep last 100
+      const next = [activity, ...prev].slice(0, 100);
       persist(KEYS.activityFeed, next);
       return next;
     });
-  }, [persist]);
+    apiCall(API_PATHS.activityFeed, 'POST', activity);
+  }, [persist, apiCall]);
 
   // --- SETTINGS ---
   const updateSettings = useCallback((data) => {
@@ -278,7 +418,54 @@ export function StoreProvider({ children }) {
       persist(KEYS.settings, next);
       return next;
     });
-  }, [persist]);
+    apiCall(API_PATHS.settings, 'PUT', data);
+  }, [persist, apiCall]);
+
+  // --- Re-fetch from server (called after server config changes) ---
+  const refreshFromServer = useCallback(async () => {
+    const cfg = getServerConfig();
+    if (!cfg) {
+      setIsServerMode(false);
+      return;
+    }
+
+    try {
+      const [
+        serverClients,
+        serverCampaigns,
+        serverPosts,
+        serverResearch,
+        serverStrategies,
+        serverProposals,
+        serverActivity,
+        serverSettings,
+      ] = await Promise.all([
+        apiFetch(API_PATHS.clients),
+        apiFetch(API_PATHS.campaigns),
+        apiFetch(API_PATHS.posts),
+        apiFetch(API_PATHS.research),
+        apiFetch(API_PATHS.strategies),
+        apiFetch(API_PATHS.proposals),
+        apiFetch(API_PATHS.activityFeed),
+        apiFetch(API_PATHS.settings),
+      ]);
+
+      setClients(Array.isArray(serverClients) ? serverClients : []);
+      setCampaigns(Array.isArray(serverCampaigns) ? serverCampaigns : []);
+      setPosts(Array.isArray(serverPosts) ? serverPosts : []);
+      setResearch(Array.isArray(serverResearch) ? serverResearch : []);
+      setStrategies(Array.isArray(serverStrategies) ? serverStrategies : []);
+      setProposals(Array.isArray(serverProposals) ? serverProposals : []);
+      setActivityFeed(Array.isArray(serverActivity) ? serverActivity : []);
+      setSettings(serverSettings && typeof serverSettings === 'object' && Object.keys(serverSettings).length > 0
+        ? serverSettings
+        : sampleSettings);
+      setIsServerMode(true);
+    } catch (err) {
+      console.warn('refreshFromServer failed:', err.message);
+      setIsServerMode(false);
+    }
+  }, []);
 
   // --- QUERIES ---
   const getClientCampaigns = useCallback((clientId) => {
@@ -359,6 +546,8 @@ export function StoreProvider({ children }) {
 
   const value = {
     loaded,
+    isServerMode,
+    refreshFromServer,
     clients, addClient, updateClient, deleteClient,
     campaigns, addCampaign, updateCampaign, deleteCampaign,
     posts, addPost, updatePost, deletePost,
