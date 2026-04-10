@@ -30,7 +30,7 @@ const QUICK_ACTIONS_CONFIG = [
 // ─── COMPONENT ──────────────────────────────────────────────────────────────────
 
 export default function CommandCentre({ onNavigate }) {
-  const { clients, campaigns, posts, strategies, activityFeed } = useStore();
+  const { clients, campaigns, posts, strategies, activityFeed, settings } = useStore();
   const [clientFilter, setClientFilter] = useState('all');
 
   // Filtered data based on client filter
@@ -230,8 +230,45 @@ export default function CommandCentre({ onNavigate }) {
   // Active clients for filter tabs
   const activeClients = clients.filter(c => c.status === 'Active');
 
+  const needsSetup = !settings?.apiKey;
+  const isEmpty = clients.length === 0;
+
   return (
     <div className="space-y-6 max-w-[1400px]">
+
+      {/* ─── SETUP BANNER ──────────────────────────────────────────────────── */}
+      {(needsSetup || isEmpty) && (
+        <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/5 p-5">
+          <h2 className="text-lg font-semibold text-white mb-2">Welcome to Bear Witness</h2>
+          <p className="text-sm text-[#9CA3AF] mb-4">Get started by completing these steps:</p>
+          <div className="flex flex-col gap-2">
+            {needsSetup && (
+              <button
+                onClick={() => onNavigate('settings')}
+                className="flex items-center gap-3 p-3 rounded-lg border border-[#2A2A3A] bg-[#1A1A26] hover:border-emerald-500/30 transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-md bg-emerald-500/15 flex items-center justify-center text-emerald-400 font-bold text-sm">1</div>
+                <div>
+                  <div className="text-sm font-medium text-white">Add your Anthropic API key</div>
+                  <div className="text-xs text-[#6B7280]">Go to Settings to enable AI features (outreach, strategy, proposals)</div>
+                </div>
+              </button>
+            )}
+            {isEmpty && (
+              <button
+                onClick={() => onNavigate('client-hub', { action: 'add' })}
+                className="flex items-center gap-3 p-3 rounded-lg border border-[#2A2A3A] bg-[#1A1A26] hover:border-emerald-500/30 transition-colors text-left"
+              >
+                <div className="w-8 h-8 rounded-md bg-blue-500/15 flex items-center justify-center text-blue-400 font-bold text-sm">{needsSetup ? '2' : '1'}</div>
+                <div>
+                  <div className="text-sm font-medium text-white">Add your first client</div>
+                  <div className="text-xs text-[#6B7280]">Set up a client profile to start managing campaigns and content</div>
+                </div>
+              </button>
+            )}
+          </div>
+        </div>
+      )}
 
       {/* ─── CLIENT FILTER TABS ──────────────────────────────────────────────── */}
       <div className="flex items-center gap-2 overflow-x-auto pb-1">

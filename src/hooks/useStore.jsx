@@ -50,27 +50,9 @@ export function StoreProvider({ children }) {
       const storedActivity = await storage.get(KEYS.activityFeed);
       const storedSettings = await storage.get(KEYS.settings);
 
-      // If no data exists, seed with sample data
-      if (!storedClients || storedClients.length === 0) {
-        await storage.set(KEYS.clients, sampleClients);
-        await storage.set(KEYS.campaigns, sampleCampaigns);
-        await storage.set(KEYS.posts, samplePosts);
-        await storage.set(KEYS.research, sampleResearch);
-        await storage.set(KEYS.strategies, []);
-        await storage.set(KEYS.proposals, []);
-        await storage.set(KEYS.activityFeed, sampleActivityFeed);
-        await storage.set(KEYS.settings, sampleSettings);
-
-        setClients(sampleClients);
-        setCampaigns(sampleCampaigns);
-        setPosts(samplePosts);
-        setResearch(sampleResearch);
-        setStrategies([]);
-        setProposals([]);
-        setActivityFeed(sampleActivityFeed);
-        setSettings(sampleSettings);
-      } else {
-        setClients(storedClients);
+      // Start clean — no sample data
+      {
+        setClients(storedClients || []);
         setCampaigns(storedCampaigns || []);
         setPosts(storedPosts || []);
         setResearch(storedResearch || []);
