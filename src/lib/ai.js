@@ -5,10 +5,16 @@ const MODEL = 'claude-sonnet-4-20250514';
 
 function getApiKey() {
   try {
-    const raw = localStorage.getItem('bw:settings:global');
-    if (!raw) return null;
-    const settings = JSON.parse(raw);
-    return settings.apiKey || null;
+    // Try bw2: prefix first (current), then bw: (legacy)
+    const raw = localStorage.getItem('bw2:settings:global') || localStorage.getItem('bw:settings:global');
+    if (raw) {
+      const settings = JSON.parse(raw);
+      if (settings.apiKey) return settings.apiKey;
+    }
+    // Also check if there's a standalone key stored directly
+    const directKey = localStorage.getItem('bw2:apiKey') || localStorage.getItem('bw:apiKey');
+    if (directKey) return directKey;
+    return null;
   } catch {
     return null;
   }
